@@ -1,0 +1,36 @@
+{
+  "name": "actual-budget-mcp",
+  "version": "0.1.0",
+  "description": "A secure MCP stdio server for Actual Budget.",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "actual-budget-mcp": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "allowScripts": {
+    "better-sqlite3": true,
+    "esbuild": true
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.build.json && node -e \"require('node:fs').chmodSync('dist/index.js', 0o755)\"",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@actual-app/api": "26.8.1",
+    "@modelcontextprotocol/server": "2.0.0",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@types/node": "26.4.0",
+    "tsx": "4.23.12",
+    "typescript": "7.0.2",
+    "vitest": "4.1.10"
+  }
+}
