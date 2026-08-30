@@ -2,6 +2,7 @@ import { z } from 'zod/v4';
 import {
   batchSchema,
   boundedTextSchema,
+  entityNameSchema,
   integerAmountSchema,
   isoDateSchema,
   MAX_DATE_RANGE_DAYS,
@@ -15,9 +16,18 @@ export const errorOutputSchema = z.object({
     code: z.string().describe('Stable public error code.'),
     message: z.string().describe('Sanitized English error message.'),
     operation: z.string().describe('Tool operation that failed.'),
-    retryable: z.boolean().describe('Whether retrying later may succeed.')
-  })
-});
+    retryable: z.boolean().describe('Whether retrying later may succeed.'),
+    details: z.record(z.string(), z.unknown()).optional().describe('Safe relationship or refusal details.'),
+    recoveryAction: z.string().optional().describe('Safe next operation for partial-state recovery.'),
+    entity: z.object({
+      type: z.enum(['account', 'categoryGroup', 'category', 'transaction']),
+      id: opaqueIdSchema.optional(),
+      name: z.string().optional()
+    }).strict().optional(),
+    state: z.enum(['local_change_may_have_succeeded', 'synchronized_but_unverified']).optional(),
+    partialState: z.boolean().optional()
+  }).strict()
+}).strict();
 
 export const accountSchema = z.object({
   id: opaqueIdSchema.describe('Opaque Actual account identifier.'),
@@ -162,3 +172,127 @@ export const deleteTransactionInputSchema = z.object({
   transactionId: opaqueIdSchema,
   confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
 }).strict().describe('Target transaction and literal destructive confirmation.');
+
+const changedSchema = z.boolean().describe('Whether this call changed persisted Actual state.');
+
+export const createAccountInputSchema = z.object({
+  name: entityNameSchema,
+  offbudget: z.boolean().optional().default(false),
+  initialBalance: integerAmountSchema.optional()
+}).strict().describe('New account name, budget inclusion, and optional signed opening balance in integer minor units.');
+
+export const updateAccountInputSchema = z.object({
+  accountId: opaqueIdSchema,
+  name: entityNameSchema.optional(),
+  offbudget: z.boolean().optional()
+}).strict().refine(value => value.name !== undefined || value.offbudget !== undefined, {
+  message: 'At least one permitted update field is required.'
+}).describe('Target account and one or more allowlisted name/offbudget updates.');
+
+export const closeAccountInputSchema = z.object({
+  accountId: opaqueIdSchema,
+  transferAccountId: opaqueIdSchema.optional(),
+  transferCategoryId: opaqueIdSchema.optional()
+}).strict().describe('Account to close and optional official balance-transfer targets.');
+
+export const reopenAccountInputSchema = accountIdInputSchema.describe('Closed account to reopen.');
+
+export const deleteAccountInputSchema = z.object({
+  accountId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().describe('DESTRUCTIVE OPERATION input for deleting one proven-empty account.');
+
+export const accountMutationOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  account: accountSchema
+}).strict().describe('Persisted account state after a structural operation.');
+
+export const accountDeletionOutputSchema = z.object({
+  success: z.literal(true),
+  deletedAccountId: opaqueIdSchema,
+  deletedAccountName: z.string(),
+  relatedTransactionCount: z.literal(0)
+}).strict().describe('Immutable summary of a confirmed empty-account deletion.');
+
+export const createCategoryGroupInputSchema = z.object({
+  name: entityNameSchema,
+  isIncome: z.boolean().optional().default(false)
+}).strict().describe('New visible category group with an explicit or default expense/income type.');
+
+export const updateCategoryGroupInputSchema = z.object({
+  groupId: opaqueIdSchema,
+  name: entityNameSchema
+}).strict().describe('Category group to rename; type and visibility are not caller-controlled.');
+
+export const deleteCategoryGroupInputSchema = z.object({
+  groupId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().describe('DESTRUCTIVE OPERATION input for deleting one proven-empty category group.');
+
+export const administeredCategoryGroupSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  isIncome: z.boolean(),
+  hidden: z.boolean()
+}).strict().describe('Normalized category-group administration entity.');
+
+export const categoryGroupMutationOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  categoryGroup: administeredCategoryGroupSchema
+}).strict().describe('Persisted category-group state after a structural operation.');
+
+export const categoryGroupDeletionOutputSchema = z.object({
+  success: z.literal(true),
+  deletedCategoryGroupId: opaqueIdSchema,
+  deletedCategoryGroupName: z.string(),
+  relatedCategoryCount: z.literal(0)
+}).strict().describe('Immutable summary of a confirmed empty category-group deletion.');
+
+export const createCategoryInputSchema = z.object({
+  name: entityNameSchema,
+  groupId: opaqueIdSchema
+}).strict().describe('New visible category whose type is derived from its persisted group.');
+
+export const updateCategoryInputSchema = z.object({
+  categoryId: opaqueIdSchema,
+  name: entityNameSchema
+}).strict().describe('Category to rename; group, type, and visibility are not caller-controlled.');
+
+export const moveCategoryInputSchema = z.object({
+  categoryId: opaqueIdSchema,
+  targetGroupId: opaqueIdSchema
+}).strict().describe('Category and same-type target group for a semantic move.');
+
+export const categoryIdInputSchema = z.object({
+  categoryId: opaqueIdSchema
+}).strict().describe('Opaque identifier of the requested category.');
+
+export const deleteCategoryInputSchema = z.object({
+  categoryId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().describe('DESTRUCTIVE OPERATION input for deleting one proven-unused category.');
+
+export const administeredCategorySchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  groupId: opaqueIdSchema,
+  isIncome: z.boolean(),
+  hidden: z.boolean()
+}).strict().describe('Normalized category administration entity.');
+
+export const categoryMutationOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  category: administeredCategorySchema
+}).strict().describe('Persisted category state after a structural operation.');
+
+export const categoryDeletionOutputSchema = z.object({
+  success: z.literal(true),
+  deletedCategoryId: opaqueIdSchema,
+  deletedCategoryName: z.string(),
+  relatedTransactionCount: z.literal(0),
+  relatedBudgetMonthCount: z.literal(0),
+  relatedCarryoverMonthCount: z.literal(0)
+}).strict().describe('Immutable summary of a confirmed unused-category deletion.');

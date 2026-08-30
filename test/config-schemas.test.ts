@@ -4,6 +4,14 @@ import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, sanitizeServerUrl } from '../src/config.js';
 import { batchSchema, dateRangeSchema, integerAmountSchema, isoDateSchema, opaqueIdSchema } from '../src/schemas.js';
+import {
+  createAccountInputSchema,
+  createCategoryInputSchema,
+  deleteAccountInputSchema,
+  deleteCategoryGroupInputSchema,
+  deleteCategoryInputSchema,
+  updateAccountInputSchema
+} from '../src/mcp/contracts.js';
 import { z } from 'zod/v4';
 
 const temporaryDirectories: string[] = [];
@@ -57,5 +65,28 @@ describe('shared schemas', () => {
     const schema = batchSchema(z.number());
     expect(schema.parse(Array.from({ length: 500 }, (_, index) => index))).toHaveLength(500);
     expect(() => schema.parse(Array.from({ length: 501 }, (_, index) => index))).toThrow('500 transactions');
+  });
+
+  it('trims structural names, keeps signed balances, and rejects invalid or extra fields', () => {
+    expect(createAccountInputSchema.parse({ name: '  Savings  ', initialBalance: -12030 })).toEqual({
+      name: 'Savings', offbudget: false, initialBalance: -12030
+    });
+    expect(() => createAccountInputSchema.parse({ name: '   ' })).toThrow('must not be empty');
+    expect(() => createAccountInputSchema.parse({ name: 'x'.repeat(256) })).toThrow('255');
+    expect(() => updateAccountInputSchema.parse({ accountId: 'a' })).toThrow('permitted update');
+    expect(() => updateAccountInputSchema.parse({ accountId: 'a', closed: true })).toThrow();
+    expect(() => createCategoryInputSchema.parse({ name: 'Food', groupId: 'g', hidden: true })).toThrow();
+  });
+
+  it('requires literal destructive confirmation for all structural deletes', () => {
+    for (const [schema, id] of [
+      [deleteAccountInputSchema, { accountId: 'a' }],
+      [deleteCategoryGroupInputSchema, { groupId: 'g' }],
+      [deleteCategoryInputSchema, { categoryId: 'c' }]
+    ] as const) {
+      expect(() => schema.parse(id)).toThrow('confirmDestructive');
+      expect(() => schema.parse({ ...id, confirmDestructive: false })).toThrow('confirmDestructive');
+      expect(schema.parse({ ...id, confirmDestructive: true })).toMatchObject({ confirmDestructive: true });
+    }
   });
 });

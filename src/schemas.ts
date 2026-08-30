@@ -5,6 +5,7 @@ export const MAX_IMPORT_BATCH = 500;
 export const MAX_TRANSACTION_RESULTS = 5_000;
 export const MAX_ID_LENGTH = 512;
 export const MAX_TEXT_LENGTH = 10_000;
+export const MAX_ENTITY_NAME_LENGTH = 255;
 
 export const opaqueIdSchema = z
   .string('Identifier must be a string.')
@@ -16,6 +17,12 @@ export const integerAmountSchema = z
   .number('Amount must be a number.')
   .int('Amount must be an integer in minor units.')
   .safe('Amount must be a safe integer.');
+
+export const entityNameSchema = z
+  .string('Name must be a string.')
+  .trim()
+  .min(1, 'Name must not be empty.')
+  .max(MAX_ENTITY_NAME_LENGTH, `Name must not exceed ${MAX_ENTITY_NAME_LENGTH} characters.`);
 
 export const boundedTextSchema = z.string().max(MAX_TEXT_LENGTH, `Text must not exceed ${MAX_TEXT_LENGTH} characters.`);
 

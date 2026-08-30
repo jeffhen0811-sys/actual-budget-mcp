@@ -95,7 +95,8 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
     const { api, client } = await fixture();
     vi.mocked(api.sync).mockRejectedValueOnce(new Error('network failure'));
     await expect(client.updateTransaction('transaction', { notes: 'explicit note' })).rejects.toMatchObject({
-      code: 'MUTATION_SYNC_FAILED', retryable: true
+      code: 'MUTATION_SYNC_FAILED', retryable: false,
+      metadata: { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true }
     });
     expect(api.updateTransaction).toHaveBeenCalledOnce();
     await client.shutdown();

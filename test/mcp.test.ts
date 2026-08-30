@@ -14,7 +14,21 @@ function fakeRuntime(): ToolRuntime {
     getTransactions: vi.fn().mockResolvedValue([{ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500, notes: 'Café da manhã' }]),
     importTransactions: vi.fn().mockResolvedValue({ added: ['t1'], updated: [], errors: [] }),
     updateTransaction: vi.fn().mockResolvedValue({ success: true, transactionId: 't1' }),
-    deleteTransaction: vi.fn().mockResolvedValue({ success: true, transactionId: 't1' })
+    deleteTransaction: vi.fn().mockResolvedValue({ success: true, transactionId: 't1' }),
+    createAccount: vi.fn().mockResolvedValue({ success: true, changed: true, account: { id: 'a2', name: 'Savings', offbudget: false, closed: false } }),
+    updateAccount: vi.fn().mockResolvedValue({ success: true, changed: true, account: { id: 'a1', name: 'Checking', offbudget: false, closed: false } }),
+    closeAccount: vi.fn().mockResolvedValue({ success: true, changed: true, account: { id: 'a1', name: 'Conta Corrente', offbudget: false, closed: true } }),
+    reopenAccount: vi.fn().mockResolvedValue({ success: true, changed: true, account: { id: 'a1', name: 'Conta Corrente', offbudget: false, closed: false } }),
+    deleteAccount: vi.fn().mockResolvedValue({ success: true, deletedAccountId: 'a2', deletedAccountName: 'Savings', relatedTransactionCount: 0 }),
+    createCategoryGroup: vi.fn().mockResolvedValue({ success: true, changed: true, categoryGroup: { id: 'g2', name: 'Travel', isIncome: false, hidden: false } }),
+    updateCategoryGroup: vi.fn().mockResolvedValue({ success: true, changed: true, categoryGroup: { id: 'g1', name: 'Housing', isIncome: false, hidden: false } }),
+    deleteCategoryGroup: vi.fn().mockResolvedValue({ success: true, deletedCategoryGroupId: 'g2', deletedCategoryGroupName: 'Travel', relatedCategoryCount: 0 }),
+    createCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c2', name: 'Flights', groupId: 'g2', isIncome: false, hidden: false } }),
+    updateCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: false } }),
+    moveCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g2', isIncome: false, hidden: false } }),
+    hideCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: true } }),
+    unhideCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: false } }),
+    deleteCategory: vi.fn().mockResolvedValue({ success: true, deletedCategoryId: 'c2', deletedCategoryName: 'Flights', relatedTransactionCount: 0, relatedBudgetMonthCount: 0, relatedCarryoverMonthCount: 0 })
   };
 }
 
@@ -36,10 +50,10 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly ten tools with accurate annotations and English metadata', async () => {
+  it('registers exactly twenty-four tools with accurate annotations and English metadata', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(10);
+    expect(tools).toHaveLength(24);
     for (const tool of tools) {
       expect(tool.title).toMatch(/^[\x20-\x7E]+$/);
       expect(tool.description).toMatch(/^[\x20-\x7E]+$/);
@@ -52,6 +66,11 @@ describe('MCP server contract', () => {
     expect(tools.find(tool => tool.name === 'actual_sync')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: true });
     expect(tools.find(tool => tool.name === 'actual_delete_transaction')?.annotations?.destructiveHint).toBe(true);
     expect(tools.find(tool => tool.name === 'actual_delete_transaction')?.description).toContain('DESTRUCTIVE OPERATION');
+    for (const name of ['actual_delete_account', 'actual_delete_category_group', 'actual_delete_category']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
+      expect(tools.find(tool => tool.name === name)?.description).toContain('DESTRUCTIVE OPERATION');
+    }
+    expect(tools.some(tool => /reorder|account_group|actualql|generic_crud/i.test(tool.name))).toBe(false);
   });
 
   it('returns matching JSON text and structured content while preserving user data verbatim', async () => {
@@ -72,7 +91,21 @@ describe('MCP server contract', () => {
       { name: 'actual_get_transactions', arguments: { accountId: 'a1', startDate: '2026-08-01', endDate: '2026-08-31' } },
       { name: 'actual_import_transactions', arguments: { accountId: 'a1', transactions: [{ date: '2026-08-29', amount: -1299, imported_id: 'provider:1' }] } },
       { name: 'actual_update_transaction', arguments: { transactionId: 't1', fields: { notes: 'Explicit note' } } },
-      { name: 'actual_delete_transaction', arguments: { transactionId: 't1', confirmDestructive: true } }
+      { name: 'actual_delete_transaction', arguments: { transactionId: 't1', confirmDestructive: true } },
+      { name: 'actual_create_account', arguments: { name: 'Savings', initialBalance: -12030 } },
+      { name: 'actual_update_account', arguments: { accountId: 'a1', name: 'Checking' } },
+      { name: 'actual_close_account', arguments: { accountId: 'a1' } },
+      { name: 'actual_reopen_account', arguments: { accountId: 'a1' } },
+      { name: 'actual_delete_account', arguments: { accountId: 'a2', confirmDestructive: true } },
+      { name: 'actual_create_category_group', arguments: { name: 'Travel' } },
+      { name: 'actual_update_category_group', arguments: { groupId: 'g1', name: 'Housing' } },
+      { name: 'actual_delete_category_group', arguments: { groupId: 'g2', confirmDestructive: true } },
+      { name: 'actual_create_category', arguments: { name: 'Flights', groupId: 'g2' } },
+      { name: 'actual_update_category', arguments: { categoryId: 'c1', name: 'Rent' } },
+      { name: 'actual_move_category', arguments: { categoryId: 'c1', targetGroupId: 'g2' } },
+      { name: 'actual_hide_category', arguments: { categoryId: 'c1' } },
+      { name: 'actual_unhide_category', arguments: { categoryId: 'c1' } },
+      { name: 'actual_delete_category', arguments: { categoryId: 'c2', confirmDestructive: true } }
     ];
     for (const call of calls) {
       const result = await client.callTool(call);
@@ -81,6 +114,32 @@ describe('MCP server contract', () => {
       expect(JSON.parse(result.content[0] && result.content[0].type === 'text' ? result.content[0].text : ''), call.name)
         .toEqual(result.structuredContent);
     }
+  });
+
+  it('preserves the v0.1.0 category-list shape exactly', async () => {
+    const result = await client.callTool({ name: 'actual_list_categories', arguments: {} });
+    expect(result.structuredContent).toEqual({
+      categoryGroups: [{ groupId: 'g1', groupName: 'Moradia', categories: [{ id: 'c1', name: 'Aluguel', hidden: false }] }]
+    });
+    expect(Object.keys((result.structuredContent as { categoryGroups: Array<Record<string, unknown>> }).categoryGroups[0]!)).toEqual([
+      'groupId', 'groupName', 'categories'
+    ]);
+  });
+
+  it('rejects every structural delete without literal confirmation before runtime execution', async () => {
+    const calls = [
+      ['actual_delete_account', { accountId: 'a2' }],
+      ['actual_delete_category_group', { groupId: 'g2' }],
+      ['actual_delete_category', { categoryId: 'c2' }]
+    ] as const;
+    for (const [name, args] of calls) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).toBe(true);
+      expect(result.structuredContent, name).toBeDefined();
+    }
+    expect(runtime.deleteAccount).not.toHaveBeenCalled();
+    expect(runtime.deleteCategoryGroup).not.toHaveBeenCalled();
+    expect(runtime.deleteCategory).not.toHaveBeenCalled();
   });
 
   it('rejects invalid dates, unknown fields, fractional amounts, oversized batches, and unconfirmed deletion before runtime calls', async () => {

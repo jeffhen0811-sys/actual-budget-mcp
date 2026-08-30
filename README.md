@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget V1 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.2.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Ten read, mutation, health, and synchronization tools.
+- Twenty-four read, transaction, budget-structure, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -109,6 +109,84 @@ Example idempotent import input:
 
 Imports use `reimportDeleted: false`. A repeated `imported_id` is reconciled without creating a duplicate, and a deleted imported transaction is not recreated by default. Every successful import, update, or deletion is synchronized before success is returned.
 
+## Budget structure administration
+
+Version 0.2.0 adds fourteen semantic tools. Names are trimmed and must contain 1–255 characters. Create/update/visibility/move results return `success`, `changed`, and the verified persisted `account`, `categoryGroup`, or `category`. Idempotent desired-state calls return `changed: false` without mutating or synchronizing. Delete results return immutable pre-delete IDs, names, and zero relationship counts.
+
+| Tool | Strict input | Output and safety behavior |
+| --- | --- | --- |
+| `actual_create_account` | `name`, optional `offbudget`, optional signed `initialBalance` | Creates and verifies an account. `offbudget` defaults to `false`. |
+| `actual_update_account` | `accountId` and at least one of `name`, `offbudget` | Updates only allowlisted fields and returns the verified account. |
+| `actual_close_account` | `accountId`, optional `transferAccountId`, `transferCategoryId` | Refuses zero-history accounts because Actual 26.8.1 would delete them; nonzero balances require a valid transfer account. |
+| `actual_reopen_account` | `accountId` | Reopens and verifies a closed account; already-open is unchanged. |
+| `actual_delete_account` | `accountId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Deletes only after complete public history proves zero transactions. |
+| `actual_create_category_group` | `name`, optional `isIncome` | Creates a visible group; `isIncome` defaults to `false`. |
+| `actual_update_category_group` | `groupId`, `name` | Renames only; type and visibility are not writable. |
+| `actual_delete_category_group` | `groupId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Deletes only after a complete read proves zero linked categories. |
+| `actual_create_category` | `name`, `groupId` | Derives income/expense type from the group and creates a visible category. |
+| `actual_update_category` | `categoryId`, `name` | Renames only. |
+| `actual_move_category` | `categoryId`, `targetGroupId` | Moves only between groups with the same persisted income/expense type. |
+| `actual_hide_category` | `categoryId` | Hides and verifies the category. |
+| `actual_unhide_category` | `categoryId` | Makes the category visible and verifies it. |
+| `actual_delete_category` | `categoryId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Deletes only after every account history and returned budget month proves no transaction, budget, or carryover use. |
+
+Actual amounts are integer minor units without conversion. In a Brazilian real locale, `12030` represents `R$ 120.30`; `-12030` is a signed negative opening balance.
+
+```json
+{"name":"Emergency fund","offbudget":false,"initialBalance":12030}
+```
+
+```json
+{"categoryId":"opaque-category-id","targetGroupId":"opaque-expense-group-id"}
+```
+
+```json
+{"accountId":"opaque-empty-account-id","confirmDestructive":true}
+```
+
+Complete example inputs for the fourteen tools:
+
+```text
+actual_create_account          {"name":"Savings","offbudget":false,"initialBalance":12030}
+actual_update_account          {"accountId":"account-id","name":"Main savings","offbudget":true}
+actual_close_account           {"accountId":"account-id","transferAccountId":"target-account-id","transferCategoryId":"category-id"}
+actual_reopen_account          {"accountId":"account-id"}
+actual_delete_account          {"accountId":"empty-account-id","confirmDestructive":true}
+actual_create_category_group   {"name":"Travel","isIncome":false}
+actual_update_category_group   {"groupId":"group-id","name":"Trips"}
+actual_delete_category_group   {"groupId":"empty-group-id","confirmDestructive":true}
+actual_create_category         {"name":"Flights","groupId":"expense-group-id"}
+actual_update_category         {"categoryId":"category-id","name":"Airfare"}
+actual_move_category           {"categoryId":"category-id","targetGroupId":"same-type-group-id"}
+actual_hide_category           {"categoryId":"category-id"}
+actual_unhide_category         {"categoryId":"category-id"}
+actual_delete_category         {"categoryId":"unused-category-id","confirmDestructive":true}
+```
+
+Representative successful outputs:
+
+```json
+{"success":true,"changed":true,"account":{"id":"account-id","name":"Savings","offbudget":false,"closed":false,"balance":12030}}
+```
+
+```json
+{"success":true,"changed":false,"categoryGroup":{"id":"group-id","name":"Travel","isIncome":false,"hidden":false}}
+```
+
+```json
+{"success":true,"changed":true,"category":{"id":"category-id","name":"Flights","groupId":"group-id","isIncome":false,"hidden":true}}
+```
+
+```json
+{"success":true,"deletedCategoryId":"unused-category-id","deletedCategoryName":"Flights","relatedTransactionCount":0,"relatedBudgetMonthCount":0,"relatedCarryoverMonthCount":0}
+```
+
+Destructive calls fail closed with `ACCOUNT_NOT_EMPTY`, `CATEGORY_GROUP_NOT_EMPTY`, `CATEGORY_IN_USE`, or `PREFLIGHT_INCONCLUSIVE`; they never rewrite related data to make deletion succeed. Account close may also return `UNSAFE_CLOSE_WOULD_DELETE_ACCOUNT` or `TRANSFER_ACCOUNT_REQUIRED`. Cross-type moves return `INCOMPATIBLE_CATEGORY_GROUP_TYPE`.
+
+The implementation is limited to public methods exported by the installed `@actual-app/api@26.8.1`. It does not expose Account Groups, reorder operations, ActualQL, SQLite access, generic CRUD, or internal endpoints. The public transaction declaration requires dates, while the pinned exported runtime supports an omitted range for complete-history safety scans; that compatibility boundary is isolated in the adapter and contract-tested.
+
+After a local mutation followed by sync failure, `MUTATION_SYNC_FAILED` is non-retryable and includes `recoveryAction: "actual_sync"` with `local_change_may_have_succeeded`. If sync succeeds but verification fails, `POST_MUTATION_READ_FAILED` reports `synchronized_but_unverified`. Run `actual_sync` and read the entity before deciding on any further mutation; do not replay a destructive call automatically.
+
 ## Development
 
 ```bash
@@ -139,7 +217,7 @@ npm run test:coverage
 
 ### Contract tests
 
-Contract tests encode legitimate Actual shapes observed through the pinned SDK and the real integration suite, including manual transactions with nullable import metadata, Starting Balance, imported transactions, optional fields, integer amounts, closed/off-budget accounts, and category visibility.
+Contract tests encode legitimate Actual shapes observed through the pinned SDK and the real integration suite, including manual transactions with nullable import metadata, Starting Balance, imported transactions, optional fields, integer amounts, closed/off-budget accounts, category visibility, income type, and group links.
 
 ```bash
 npm run test:contract
@@ -209,13 +287,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.1.0 .
+docker build -t actual-budget-mcp:0.2.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.1.0
+  actual-budget-mcp:0.2.0
 ```
 
 ## Security
@@ -225,7 +303,7 @@ docker run --rm -i \
 - Do not commit `.env`, credentials, cache data, or logs.
 - Deletion requires `confirmDestructive: true`; tool annotations are advisory and do not replace this server-side requirement.
 - The server uses only public `@actual-app/api` methods. It does not expose ActualQL or access SQLite directly.
-- A local mutation whose following sync fails returns `MUTATION_SYNC_FAILED`. Run `actual_sync` before deciding whether a mutation should be retried.
+- A local mutation whose following sync fails returns non-retryable `MUTATION_SYNC_FAILED`. Run `actual_sync` and read the entity before deciding on another mutation.
 
 ## Troubleshooting
 
@@ -238,4 +316,4 @@ docker run --rm -i \
 
 ## Scope
 
-V1 does not include ActualQL, Pluggy integration, schedules, rules, budgeting workflows, reports, LLM categorization, financial recommendations, or an HTTP MCP transport.
+Version 0.2.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, rules, budgeting writes, reports, LLM categorization, financial recommendations, or an HTTP MCP transport.

@@ -7,7 +7,15 @@ import type { Logger } from '../logger.js';
 import { createLogger } from '../logger.js';
 import { errorMessage, redact } from '../redaction.js';
 import { MAX_TRANSACTION_RESULTS } from '../schemas.js';
-import type { ActualApiAdapter, AdapterTransaction, ImportTransaction } from './adapter.js';
+import type {
+  ActualApiAdapter,
+  AdapterAccount,
+  AdapterBudgetMonth,
+  AdapterCategory,
+  AdapterCategoryGroup,
+  AdapterTransaction,
+  ImportTransaction
+} from './adapter.js';
 import { FifoQueue } from './queue.js';
 
 export interface PublicAccount {
@@ -18,6 +26,26 @@ export interface PublicAccount {
   balance?: number;
   balanceError?: string;
 }
+
+export interface PublicCategoryGroup {
+  id: string;
+  name: string;
+  isIncome: boolean;
+  hidden: boolean;
+}
+
+export interface PublicCategory {
+  id: string;
+  name: string;
+  groupId: string;
+  isIncome: boolean;
+  hidden: boolean;
+}
+
+export interface MutationResult<T> { success: true; changed: boolean; }
+export type AccountMutationResult = MutationResult<PublicAccount> & { account: PublicAccount };
+export type CategoryGroupMutationResult = MutationResult<PublicCategoryGroup> & { categoryGroup: PublicCategoryGroup };
+export type CategoryMutationResult = MutationResult<PublicCategory> & { category: PublicCategory };
 
 export interface RuntimeHealth {
   connected: boolean;
@@ -236,7 +264,8 @@ export class ActualClient {
           'MUTATION_SYNC_FAILED',
           'The local change succeeded, but synchronization failed. Run actual_sync before retrying the mutation.',
           operation,
-          true,
+          false,
+          { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true },
           { cause: error }
         );
       }
@@ -276,6 +305,502 @@ export class ActualClient {
         throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', 'actual_delete_transaction', false);
       }
       return { success: true as const, transactionId };
+    });
+  }
+
+  private async findAccount(accountId: string): Promise<AdapterAccount | undefined> {
+    return (await this.api.getAccounts()).find(account => account.id === accountId);
+  }
+
+  private async findCategoryGroup(groupId: string): Promise<AdapterCategoryGroup | undefined> {
+    return (await this.api.getCategoryGroups()).find(group => group.id === groupId);
+  }
+
+  private async findCategory(categoryId: string): Promise<AdapterCategory | undefined> {
+    return (await this.api.getCategories()).find(category => category.id === categoryId);
+  }
+
+  private requireAccount(account: AdapterAccount | undefined, operation: string): AdapterAccount {
+    if (!account) throw new PublicError('NOT_FOUND', 'The requested account was not found.', operation, false);
+    return account;
+  }
+
+  private requireCategoryGroup(group: AdapterCategoryGroup | undefined, operation: string): AdapterCategoryGroup {
+    if (!group) throw new PublicError('NOT_FOUND', 'The requested category group was not found.', operation, false);
+    return group;
+  }
+
+  private requireCategory(category: AdapterCategory | undefined, operation: string): AdapterCategory {
+    if (!category) throw new PublicError('NOT_FOUND', 'The requested category was not found.', operation, false);
+    return category;
+  }
+
+  private normalizeStructuralAccount(account: AdapterAccount, operation: string): PublicAccount {
+    if (typeof account.offbudget !== 'boolean' || typeof account.closed !== 'boolean') {
+      throw new PublicError(
+        'PREFLIGHT_INCONCLUSIVE',
+        'Actual returned an incomplete account shape.',
+        operation,
+        false,
+        { entity: { type: 'account', id: account.id, name: account.name } }
+      );
+    }
+    return { id: account.id, name: account.name, offbudget: account.offbudget, closed: account.closed };
+  }
+
+  private normalizeCategoryGroup(group: AdapterCategoryGroup, operation: string): PublicCategoryGroup {
+    if (typeof group.is_income !== 'boolean' || typeof group.hidden !== 'boolean') {
+      throw new PublicError(
+        'PREFLIGHT_INCONCLUSIVE',
+        'Actual returned an incomplete category-group shape.',
+        operation,
+        false,
+        { entity: { type: 'categoryGroup', id: group.id, name: group.name } }
+      );
+    }
+    return { id: group.id, name: group.name, isIncome: group.is_income, hidden: group.hidden };
+  }
+
+  private normalizeCategory(category: AdapterCategory, operation: string): PublicCategory {
+    if (typeof category.is_income !== 'boolean' || typeof category.hidden !== 'boolean' || !category.group_id) {
+      throw new PublicError(
+        'PREFLIGHT_INCONCLUSIVE',
+        'Actual returned an incomplete category shape.',
+        operation,
+        false,
+        { entity: { type: 'category', id: category.id, name: category.name } }
+      );
+    }
+    return {
+      id: category.id,
+      name: category.name,
+      groupId: category.group_id,
+      isIncome: category.is_income,
+      hidden: category.hidden
+    };
+  }
+
+  private async accountWithBalance(account: AdapterAccount, operation: string): Promise<PublicAccount> {
+    const normalized = this.normalizeStructuralAccount(account, operation);
+    try {
+      normalized.balance = await this.api.getAccountBalance(account.id);
+    } catch (error) {
+      normalized.balanceError = redact(errorMessage(error), this.secrets()) || 'Balance unavailable.';
+    }
+    return normalized;
+  }
+
+  private mutationError(operation: string, error: unknown, entity: { type: 'account' | 'categoryGroup' | 'category'; id?: string; name?: string }): never {
+    if (error instanceof PublicError) throw error;
+    const lower = errorMessage(error).toLowerCase();
+    if (lower.includes('already exists') || lower.includes('unique constraint') || lower.includes('duplicate')) {
+      throw new PublicError('NAME_CONFLICT', 'Actual rejected the requested name because it conflicts with an existing entity.', operation, false, { entity }, { cause: error });
+    }
+    throw new PublicError('MUTATION_FAILED', 'Actual rejected the structural mutation.', operation, false, { entity }, { cause: error });
+  }
+
+  private async synchronizeAndVerify<T>(
+    operation: string,
+    entity: { type: 'account' | 'categoryGroup' | 'category'; id?: string; name?: string },
+    verify: () => Promise<T>
+  ): Promise<T> {
+    try {
+      await this.api.sync();
+    } catch (error) {
+      this.logger.error('Synchronization failed after a local structural mutation.', { operation, entityType: entity.type, entityId: entity.id });
+      throw new PublicError(
+        'MUTATION_SYNC_FAILED',
+        'The local change may have succeeded, but synchronization failed. Run actual_sync and read the entity before another mutation.',
+        operation,
+        false,
+        { recoveryAction: 'actual_sync', entity, state: 'local_change_may_have_succeeded', partialState: true },
+        { cause: error }
+      );
+    }
+    try {
+      return await verify();
+    } catch (error) {
+      throw new PublicError(
+        'POST_MUTATION_READ_FAILED',
+        'The change synchronized, but its persisted state could not be verified.',
+        operation,
+        false,
+        { recoveryAction: 'actual_sync', entity, state: 'synchronized_but_unverified', partialState: true },
+        { cause: error }
+      );
+    }
+  }
+
+  private async completeAccountHistory(account: AdapterAccount, operation: string): Promise<AdapterTransaction[]> {
+    try {
+      const transactions = await this.api.getAllTransactions(account.id);
+      if (!Array.isArray(transactions)) throw new Error('Transaction history was not an array.');
+      this.validateTransactions(transactions);
+      return transactions;
+    } catch (error) {
+      throw new PublicError(
+        'PREFLIGHT_INCONCLUSIVE',
+        'Complete account transaction history could not be verified.',
+        operation,
+        false,
+        { entity: { type: 'account', id: account.id, name: account.name } },
+        { cause: error }
+      );
+    }
+  }
+
+  private validateTransactions(transactions: readonly AdapterTransaction[]): void {
+    for (const transaction of transactions) {
+      if (!transaction || typeof transaction !== 'object' || typeof transaction.id !== 'string' ||
+          typeof transaction.account !== 'string' || typeof transaction.date !== 'string' ||
+          typeof transaction.amount !== 'number' || !Number.isSafeInteger(transaction.amount) ||
+          (transaction.category !== undefined && transaction.category !== null && typeof transaction.category !== 'string')) {
+        throw new Error('Transaction history contained a malformed record.');
+      }
+      if (transaction.subtransactions !== undefined) {
+        if (!Array.isArray(transaction.subtransactions)) throw new Error('Transaction subtransactions were malformed.');
+        this.validateTransactions(transaction.subtransactions);
+      }
+    }
+  }
+
+  private countCategoryTransactions(transactions: readonly AdapterTransaction[], categoryId: string): number {
+    let count = 0;
+    for (const transaction of transactions) {
+      if (transaction.category === categoryId) count += 1;
+      if (transaction.subtransactions) count += this.countCategoryTransactions(transaction.subtransactions, categoryId);
+    }
+    return count;
+  }
+
+  private inspectBudgetMonth(month: AdapterBudgetMonth, categoryId: string, isIncome: boolean): { budget: boolean; carryover: boolean } {
+    if (!month || typeof month.month !== 'string' || !Array.isArray(month.categoryGroups)) {
+      throw new Error('Budget month shape is incomplete.');
+    }
+    let budget = false;
+    let carryover = false;
+    for (const group of month.categoryGroups) {
+      if (!Array.isArray(group.categories)) throw new Error('Budget month categories are incomplete.');
+      for (const category of group.categories) {
+        if (category.id !== categoryId) continue;
+        if (!isIncome && (typeof category.budgeted !== 'number' || typeof category.carryover !== 'boolean')) {
+          throw new Error('Budget relationship fields are incomplete.');
+        }
+        if (category.budgeted !== undefined && typeof category.budgeted !== 'number') throw new Error('Budget amount is malformed.');
+        if (category.carryover !== undefined && typeof category.carryover !== 'boolean') throw new Error('Carryover flag is malformed.');
+        budget ||= typeof category.budgeted === 'number' && category.budgeted !== 0;
+        carryover ||= category.carryover === true;
+      }
+    }
+    return { budget, carryover };
+  }
+
+  createAccount(name: string, offbudget = false, initialBalance?: number): Promise<AccountMutationResult> {
+    const operation = 'actual_create_account';
+    return this.run(operation, async () => {
+      let id: string;
+      try {
+        id = await this.api.createAccount({ name, offbudget, closed: false }, initialBalance);
+      } catch (error) {
+        this.mutationError(operation, error, { type: 'account', name });
+      }
+      const account = await this.synchronizeAndVerify(operation, { type: 'account', id: id!, name }, async () => {
+        const persisted = this.requireAccount(await this.findAccount(id!), operation);
+        return this.accountWithBalance(persisted, operation);
+      });
+      return { success: true, changed: true, account };
+    });
+  }
+
+  updateAccount(accountId: string, fields: { name?: string; offbudget?: boolean }): Promise<AccountMutationResult> {
+    const operation = 'actual_update_account';
+    return this.run(operation, async () => {
+      const current = this.requireAccount(await this.findAccount(accountId), operation);
+      const normalized = this.normalizeStructuralAccount(current, operation);
+      if ((fields.name === undefined || fields.name === normalized.name) &&
+          (fields.offbudget === undefined || fields.offbudget === normalized.offbudget)) {
+        return { success: true, changed: false, account: await this.accountWithBalance(current, operation) };
+      }
+      try {
+        await this.api.updateAccount(accountId, {
+          ...(fields.name === undefined ? {} : { name: fields.name }),
+          ...(fields.offbudget === undefined ? {} : { offbudget: fields.offbudget })
+        });
+      } catch (error) {
+        this.mutationError(operation, error, { type: 'account', id: accountId, name: current.name });
+      }
+      const account = await this.synchronizeAndVerify(operation, { type: 'account', id: accountId, name: fields.name ?? current.name }, async () => {
+        const persisted = this.requireAccount(await this.findAccount(accountId), operation);
+        const projected = await this.accountWithBalance(persisted, operation);
+        if ((fields.name !== undefined && projected.name !== fields.name) ||
+            (fields.offbudget !== undefined && projected.offbudget !== fields.offbudget)) throw new Error('Persisted account did not match requested fields.');
+        return projected;
+      });
+      return { success: true, changed: true, account };
+    });
+  }
+
+  closeAccount(accountId: string, transferAccountId?: string, transferCategoryId?: string): Promise<AccountMutationResult> {
+    const operation = 'actual_close_account';
+    return this.run(operation, async () => {
+      const current = this.requireAccount(await this.findAccount(accountId), operation);
+      const normalized = this.normalizeStructuralAccount(current, operation);
+      if (normalized.closed) return { success: true, changed: false, account: await this.accountWithBalance(current, operation) };
+      const history = await this.completeAccountHistory(current, operation);
+      if (history.length === 0) {
+        throw new PublicError('UNSAFE_CLOSE_WOULD_DELETE_ACCOUNT', 'Actual would delete this zero-transaction account instead of closing it.', operation, false, {
+          details: { relatedTransactionCount: 0 }, entity: { type: 'account', id: current.id, name: current.name }
+        });
+      }
+      let balance: number;
+      try { balance = await this.api.getAccountBalance(accountId); }
+      catch (error) {
+        throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The account balance could not be verified.', operation, false, {
+          entity: { type: 'account', id: current.id, name: current.name }
+        }, { cause: error });
+      }
+      if (balance !== 0 && !transferAccountId) throw new PublicError('TRANSFER_ACCOUNT_REQUIRED', 'A nonzero balance requires a transfer account.', operation, false, {
+          details: { balance }, entity: { type: 'account', id: current.id, name: current.name }
+      });
+      if (transferAccountId) {
+        if (transferAccountId === accountId) throw new PublicError('TRANSFER_ACCOUNT_REQUIRED', 'The transfer account must differ from the account being closed.', operation, false);
+        const transfer = this.requireAccount(await this.findAccount(transferAccountId), operation);
+        const target = this.normalizeStructuralAccount(transfer, operation);
+        if (target.closed) throw new PublicError('TRANSFER_ACCOUNT_REQUIRED', 'The transfer account must be open.', operation, false);
+      }
+      if (transferCategoryId) this.requireCategory(await this.findCategory(transferCategoryId), operation);
+      try { await this.api.closeAccount(accountId, transferAccountId, transferCategoryId); }
+      catch (error) { this.mutationError(operation, error, { type: 'account', id: current.id, name: current.name }); }
+      const account = await this.synchronizeAndVerify(operation, { type: 'account', id: current.id, name: current.name }, async () => {
+        const persisted = this.requireAccount(await this.findAccount(accountId), operation);
+        const projected = await this.accountWithBalance(persisted, operation);
+        if (!projected.closed) throw new Error('Account remained open.');
+        return projected;
+      });
+      return { success: true, changed: true, account };
+    });
+  }
+
+  reopenAccount(accountId: string): Promise<AccountMutationResult> {
+    const operation = 'actual_reopen_account';
+    return this.run(operation, async () => {
+      const current = this.requireAccount(await this.findAccount(accountId), operation);
+      const normalized = this.normalizeStructuralAccount(current, operation);
+      if (!normalized.closed) return { success: true, changed: false, account: await this.accountWithBalance(current, operation) };
+      try { await this.api.reopenAccount(accountId); }
+      catch (error) { this.mutationError(operation, error, { type: 'account', id: current.id, name: current.name }); }
+      const account = await this.synchronizeAndVerify(operation, { type: 'account', id: current.id, name: current.name }, async () => {
+        const persisted = this.requireAccount(await this.findAccount(accountId), operation);
+        const projected = await this.accountWithBalance(persisted, operation);
+        if (projected.closed) throw new Error('Account remained closed.');
+        return projected;
+      });
+      return { success: true, changed: true, account };
+    });
+  }
+
+  deleteAccount(accountId: string) {
+    const operation = 'actual_delete_account';
+    return this.run(operation, async () => {
+      const current = this.requireAccount(await this.findAccount(accountId), operation);
+      const normalized = this.normalizeStructuralAccount(current, operation);
+      const history = await this.completeAccountHistory(current, operation);
+      if (history.length !== 0) throw new PublicError('ACCOUNT_NOT_EMPTY', 'Only a proven-empty account can be deleted.', operation, false, {
+        details: { relatedTransactionCount: history.length }, entity: { type: 'account', id: current.id, name: current.name }
+      });
+      try {
+        if (normalized.closed) await this.api.reopenAccount(accountId);
+        await this.api.deleteAccount(accountId);
+      } catch (error) { this.mutationError(operation, error, { type: 'account', id: current.id, name: current.name }); }
+      await this.synchronizeAndVerify(operation, { type: 'account', id: current.id, name: current.name }, async () => {
+        if (await this.findAccount(accountId)) throw new Error('Account remained present.');
+      });
+      return { success: true as const, deletedAccountId: current.id, deletedAccountName: current.name, relatedTransactionCount: 0 as const };
+    });
+  }
+
+  createCategoryGroup(name: string, isIncome = false): Promise<CategoryGroupMutationResult> {
+    const operation = 'actual_create_category_group';
+    return this.run(operation, async () => {
+      let id: string;
+      try { id = await this.api.createCategoryGroup({ name, is_income: isIncome, hidden: false }); }
+      catch (error) { this.mutationError(operation, error, { type: 'categoryGroup', name }); }
+      const categoryGroup = await this.synchronizeAndVerify(operation, { type: 'categoryGroup', id: id!, name }, async () => {
+        return this.normalizeCategoryGroup(this.requireCategoryGroup(await this.findCategoryGroup(id!), operation), operation);
+      });
+      return { success: true, changed: true, categoryGroup };
+    });
+  }
+
+  updateCategoryGroup(groupId: string, name: string): Promise<CategoryGroupMutationResult> {
+    const operation = 'actual_update_category_group';
+    return this.run(operation, async () => {
+      const current = this.requireCategoryGroup(await this.findCategoryGroup(groupId), operation);
+      const normalized = this.normalizeCategoryGroup(current, operation);
+      if (normalized.name === name) return { success: true, changed: false, categoryGroup: normalized };
+      try { await this.api.updateCategoryGroup(groupId, { name }); }
+      catch (error) { this.mutationError(operation, error, { type: 'categoryGroup', id: groupId, name: current.name }); }
+      const categoryGroup = await this.synchronizeAndVerify(operation, { type: 'categoryGroup', id: groupId, name }, async () => {
+        const persisted = this.normalizeCategoryGroup(this.requireCategoryGroup(await this.findCategoryGroup(groupId), operation), operation);
+        if (persisted.name !== name) throw new Error('Category group name did not persist.');
+        return persisted;
+      });
+      return { success: true, changed: true, categoryGroup };
+    });
+  }
+
+  deleteCategoryGroup(groupId: string) {
+    const operation = 'actual_delete_category_group';
+    return this.run(operation, async () => {
+      const current = this.requireCategoryGroup(await this.findCategoryGroup(groupId), operation);
+      this.normalizeCategoryGroup(current, operation);
+      let categories: AdapterCategory[];
+      try {
+        const allCategories = await this.api.getCategories();
+        if (!Array.isArray(allCategories) || allCategories.some(category => !category || typeof category.id !== 'string' || typeof category.name !== 'string' || typeof category.group_id !== 'string')) {
+          throw new Error('Category list was incomplete.');
+        }
+        categories = allCategories.filter(category => category.group_id === groupId);
+      }
+      catch (error) { throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Linked categories could not be verified.', operation, false, {
+        entity: { type: 'categoryGroup', id: current.id, name: current.name }
+      }, { cause: error }); }
+      if (categories.length) throw new PublicError('CATEGORY_GROUP_NOT_EMPTY', 'Only a proven-empty category group can be deleted.', operation, false, {
+        details: { relatedCategoryCount: categories.length, categories: categories.map(({ id, name }) => ({ id, name })) },
+        entity: { type: 'categoryGroup', id: current.id, name: current.name }
+      });
+      try { await this.api.deleteCategoryGroup(groupId); }
+      catch (error) { this.mutationError(operation, error, { type: 'categoryGroup', id: current.id, name: current.name }); }
+      await this.synchronizeAndVerify(operation, { type: 'categoryGroup', id: current.id, name: current.name }, async () => {
+        if (await this.findCategoryGroup(groupId)) throw new Error('Category group remained present.');
+      });
+      return { success: true as const, deletedCategoryGroupId: current.id, deletedCategoryGroupName: current.name, relatedCategoryCount: 0 as const };
+    });
+  }
+
+  createCategory(name: string, groupId: string): Promise<CategoryMutationResult> {
+    const operation = 'actual_create_category';
+    return this.run(operation, async () => {
+      const group = this.normalizeCategoryGroup(this.requireCategoryGroup(await this.findCategoryGroup(groupId), operation), operation);
+      let id: string;
+      try { id = await this.api.createCategory({ name, group_id: groupId, is_income: group.isIncome, hidden: false }); }
+      catch (error) { this.mutationError(operation, error, { type: 'category', name }); }
+      const category = await this.synchronizeAndVerify(operation, { type: 'category', id: id!, name }, async () => {
+        return this.normalizeCategory(this.requireCategory(await this.findCategory(id!), operation), operation);
+      });
+      return { success: true, changed: true, category };
+    });
+  }
+
+  updateCategory(categoryId: string, name: string): Promise<CategoryMutationResult> {
+    const operation = 'actual_update_category';
+    return this.run(operation, async () => {
+      const current = this.requireCategory(await this.findCategory(categoryId), operation);
+      const normalized = this.normalizeCategory(current, operation);
+      if (normalized.name === name) return { success: true, changed: false, category: normalized };
+      try { await this.api.updateCategory(categoryId, { name }); }
+      catch (error) { this.mutationError(operation, error, { type: 'category', id: categoryId, name: current.name }); }
+      const category = await this.synchronizeAndVerify(operation, { type: 'category', id: categoryId, name }, async () => {
+        const persisted = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+        if (persisted.name !== name) throw new Error('Category name did not persist.');
+        return persisted;
+      });
+      return { success: true, changed: true, category };
+    });
+  }
+
+  moveCategory(categoryId: string, targetGroupId: string): Promise<CategoryMutationResult> {
+    const operation = 'actual_move_category';
+    return this.run(operation, async () => {
+      const current = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+      const target = this.normalizeCategoryGroup(this.requireCategoryGroup(await this.findCategoryGroup(targetGroupId), operation), operation);
+      if (current.isIncome !== target.isIncome) throw new PublicError(
+        'INCOMPATIBLE_CATEGORY_GROUP_TYPE',
+        'Categories can move only between groups with the same income/expense type.',
+        operation,
+        false,
+        { entity: { type: 'category', id: current.id, name: current.name }, details: { currentIsIncome: current.isIncome, targetIsIncome: target.isIncome } }
+      );
+      if (current.groupId === targetGroupId) return { success: true, changed: false, category: current };
+      try { await this.api.updateCategory(categoryId, { group_id: targetGroupId }); }
+      catch (error) { this.mutationError(operation, error, { type: 'category', id: current.id, name: current.name }); }
+      const category = await this.synchronizeAndVerify(operation, { type: 'category', id: current.id, name: current.name }, async () => {
+        const persisted = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+        if (persisted.groupId !== targetGroupId || persisted.isIncome !== current.isIncome) throw new Error('Category move did not persist safely.');
+        return persisted;
+      });
+      return { success: true, changed: true, category };
+    });
+  }
+
+  private setCategoryVisibility(categoryId: string, hidden: boolean, operation: string): Promise<CategoryMutationResult> {
+    return this.run(operation, async () => {
+      const current = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+      if (current.hidden === hidden) return { success: true, changed: false, category: current };
+      try { await this.api.updateCategory(categoryId, { hidden }); }
+      catch (error) { this.mutationError(operation, error, { type: 'category', id: current.id, name: current.name }); }
+      const category = await this.synchronizeAndVerify(operation, { type: 'category', id: current.id, name: current.name }, async () => {
+        const persisted = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+        if (persisted.hidden !== hidden) throw new Error('Category visibility did not persist.');
+        return persisted;
+      });
+      return { success: true, changed: true, category };
+    });
+  }
+
+  hideCategory(categoryId: string): Promise<CategoryMutationResult> {
+    return this.setCategoryVisibility(categoryId, true, 'actual_hide_category');
+  }
+
+  unhideCategory(categoryId: string): Promise<CategoryMutationResult> {
+    return this.setCategoryVisibility(categoryId, false, 'actual_unhide_category');
+  }
+
+  deleteCategory(categoryId: string) {
+    const operation = 'actual_delete_category';
+    return this.run(operation, async () => {
+      const current = this.normalizeCategory(this.requireCategory(await this.findCategory(categoryId), operation), operation);
+      let transactionCount = 0;
+      let budgetMonthCount = 0;
+      let carryoverMonthCount = 0;
+      try {
+        const accounts = await this.api.getAccounts();
+        if (!Array.isArray(accounts) || accounts.some(account => !account || typeof account.id !== 'string' || typeof account.name !== 'string')) {
+          throw new Error('Account list was incomplete.');
+        }
+        for (const account of accounts) transactionCount += this.countCategoryTransactions(await this.completeAccountHistory(account, operation), categoryId);
+        const months = await this.api.getBudgetMonths();
+        if (!Array.isArray(months) || months.some(month => typeof month !== 'string')) throw new Error('Budget month list was incomplete.');
+        for (const month of months) {
+          const budgetMonth = await this.api.getBudgetMonth(month);
+          if (budgetMonth.month !== month) throw new Error('Budget month identity did not match.');
+          const use = this.inspectBudgetMonth(budgetMonth, categoryId, current.isIncome);
+          if (use.budget) budgetMonthCount += 1;
+          if (use.carryover) carryoverMonthCount += 1;
+        }
+      } catch (error) {
+        if (error instanceof PublicError && error.code === 'PREFLIGHT_INCONCLUSIVE') throw error;
+        throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Complete category usage could not be verified.', operation, false, {
+          entity: { type: 'category', id: current.id, name: current.name }
+        }, { cause: error });
+      }
+      if (transactionCount || budgetMonthCount || carryoverMonthCount) throw new PublicError('CATEGORY_IN_USE', 'Only a proven-unused category can be deleted.', operation, false, {
+        details: { relatedTransactionCount: transactionCount, relatedBudgetMonthCount: budgetMonthCount, relatedCarryoverMonthCount: carryoverMonthCount },
+        entity: { type: 'category', id: current.id, name: current.name }
+      });
+      try { await this.api.deleteCategory(categoryId); }
+      catch (error) { this.mutationError(operation, error, { type: 'category', id: current.id, name: current.name }); }
+      await this.synchronizeAndVerify(operation, { type: 'category', id: current.id, name: current.name }, async () => {
+        if (await this.findCategory(categoryId)) throw new Error('Category remained present.');
+      });
+      return {
+        success: true as const,
+        deletedCategoryId: current.id,
+        deletedCategoryName: current.name,
+        relatedTransactionCount: 0 as const,
+        relatedBudgetMonthCount: 0 as const,
+        relatedCarryoverMonthCount: 0 as const
+      };
     });
   }
 

@@ -25,9 +25,37 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers the complete V1 tool surface through stdio', async () => {
+  it('discovers exactly 24 v0.2.0 tools with strict schemas and structural annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
+    expect(tools).toHaveLength(24);
+    for (const tool of tools) {
+      expect(tool.inputSchema.type).toBe('object');
+      expect(tool.outputSchema?.type).toBe('object');
+      expect(tool.description).toEqual(expect.any(String));
+    }
+    for (const name of ['actual_delete_account', 'actual_delete_category_group', 'actual_delete_category']) {
+      const tool = tools.find(candidate => candidate.name === name);
+      expect(tool?.description).toContain('DESTRUCTIVE OPERATION');
+      expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
+      expect(tool?.inputSchema.required).toContain('confirmDestructive');
+    }
+  });
+
+  it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
+    const calls = [
+      ['actual_delete_account', { accountId: 'missing-confirmation-account' }, 'account'],
+      ['actual_delete_category_group', { groupId: 'missing-confirmation-group' }, 'categoryGroup'],
+      ['actual_delete_category', { categoryId: 'missing-confirmation-category' }, 'category']
+    ] as const;
+    for (const [name, args, entityType] of calls) {
+      const result = await callToolExpectingError(running, name, args);
+      expect(result.structuredContent).toMatchObject({
+        error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED', retryable: false, entity: { type: entityType } }
+      });
+      assertNoConfiguredSecrets(result);
+    }
+    expect((await running.client.listTools()).tools).toHaveLength(24);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {

@@ -1,24 +1,43 @@
-import { McpServer } from '@modelcontextprotocol/server';
+import { McpServer, type StandardSchemaWithJSON } from '@modelcontextprotocol/server';
 import type { ActualClient } from '../actual/client.js';
 import type { AdapterTransaction, ImportTransaction } from '../actual/adapter.js';
 import type { Logger } from '../logger.js';
 import {
   accountIdInputSchema,
+  accountDeletionOutputSchema,
+  accountMutationOutputSchema,
   accountOutputSchema,
   accountsOutputSchema,
+  categoryDeletionOutputSchema,
+  categoryGroupDeletionOutputSchema,
+  categoryGroupMutationOutputSchema,
+  categoryIdInputSchema,
+  categoryMutationOutputSchema,
   categoriesOutputSchema,
+  closeAccountInputSchema,
+  createAccountInputSchema,
+  createCategoryGroupInputSchema,
+  createCategoryInputSchema,
+  deleteAccountInputSchema,
+  deleteCategoryGroupInputSchema,
+  deleteCategoryInputSchema,
   deleteTransactionInputSchema,
   emptyInputSchema,
   getTransactionsInputSchema,
   healthOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
+  moveCategoryInputSchema,
   payeesOutputSchema,
   syncOutputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema,
+  updateAccountInputSchema,
+  updateCategoryGroupInputSchema,
+  updateCategoryInputSchema,
   updateTransactionInputSchema
 } from './contracts.js';
+import { PublicError } from '../errors.js';
 import { successResult, toolError } from './response.js';
 
 export interface ToolRuntime {
@@ -32,6 +51,20 @@ export interface ToolRuntime {
   importTransactions: ActualClient['importTransactions'];
   updateTransaction: ActualClient['updateTransaction'];
   deleteTransaction: ActualClient['deleteTransaction'];
+  createAccount: ActualClient['createAccount'];
+  updateAccount: ActualClient['updateAccount'];
+  closeAccount: ActualClient['closeAccount'];
+  reopenAccount: ActualClient['reopenAccount'];
+  deleteAccount: ActualClient['deleteAccount'];
+  createCategoryGroup: ActualClient['createCategoryGroup'];
+  updateCategoryGroup: ActualClient['updateCategoryGroup'];
+  deleteCategoryGroup: ActualClient['deleteCategoryGroup'];
+  createCategory: ActualClient['createCategory'];
+  updateCategory: ActualClient['updateCategory'];
+  moveCategory: ActualClient['moveCategory'];
+  hideCategory: ActualClient['hideCategory'];
+  unhideCategory: ActualClient['unhideCategory'];
+  deleteCategory: ActualClient['deleteCategory'];
 }
 
 export const TOOL_NAMES = [
@@ -44,12 +77,49 @@ export const TOOL_NAMES = [
   'actual_import_transactions',
   'actual_update_transaction',
   'actual_delete_transaction',
-  'actual_sync'
+  'actual_sync',
+  'actual_create_account',
+  'actual_update_account',
+  'actual_close_account',
+  'actual_reopen_account',
+  'actual_delete_account',
+  'actual_create_category_group',
+  'actual_update_category_group',
+  'actual_delete_category_group',
+  'actual_create_category',
+  'actual_update_category',
+  'actual_move_category',
+  'actual_hide_category',
+  'actual_unhide_category',
+  'actual_delete_category'
 ] as const;
+
+function acceptMissingConfirmationForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
+  const standard = schema['~standard'];
+  type ValidateValue = Parameters<typeof standard.validate>[0];
+  type ValidateOptions = Parameters<typeof standard.validate>[1];
+  return {
+    '~standard': {
+      ...standard,
+      validate: async (value: ValidateValue, options: ValidateOptions) => {
+        if (value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'confirmDestructive')) {
+          const result = await standard.validate({ ...value, confirmDestructive: true }, options);
+          if (result.issues) return result;
+          return { value: { ...(result.value as Record<string, unknown>), confirmDestructive: false } };
+        }
+        return standard.validate(value, options);
+      }
+    }
+  } as unknown as T;
+}
+
+const deleteAccountToolInputSchema = acceptMissingConfirmationForStructuredError(deleteAccountInputSchema);
+const deleteCategoryGroupToolInputSchema = acceptMissingConfirmationForStructuredError(deleteCategoryGroupInputSchema);
+const deleteCategoryToolInputSchema = acceptMissingConfirmationForStructuredError(deleteCategoryInputSchema);
 
 export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.1.0' },
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.2.0' },
     { instructions: 'Amounts are integer minor units. Use confirmDestructive=true only for an explicitly authorized deletion.' }
   );
 
@@ -190,6 +260,237 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     },
     async ({ transactionId }) => {
       try { return successResult(await runtime.deleteTransaction(transactionId)); } catch (error) { return toolError(error, 'actual_delete_transaction', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_account',
+    {
+      title: 'Create Actual account',
+      description: 'Create an Actual account with an optional signed integer opening balance, then synchronize and verify it.',
+      inputSchema: createAccountInputSchema,
+      outputSchema: accountMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async ({ name, offbudget, initialBalance }) => {
+      try { return successResult(await runtime.createAccount(name, offbudget, initialBalance)); }
+      catch (error) { return toolError(error, 'actual_create_account', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_update_account',
+    {
+      title: 'Update Actual account',
+      description: 'Update only the name and/or off-budget state of an Actual account, then verify the persisted state.',
+      inputSchema: updateAccountInputSchema,
+      outputSchema: accountMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ accountId, name, offbudget }) => {
+      try { return successResult(await runtime.updateAccount(accountId, { ...(name === undefined ? {} : { name }), ...(offbudget === undefined ? {} : { offbudget }) })); }
+      catch (error) { return toolError(error, 'actual_update_account', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_close_account',
+    {
+      title: 'Safely close Actual account',
+      description: 'Safely close a non-empty Actual account after complete history and balance-transfer preflight.',
+      inputSchema: closeAccountInputSchema,
+      outputSchema: accountMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ accountId, transferAccountId, transferCategoryId }) => {
+      try { return successResult(await runtime.closeAccount(accountId, transferAccountId, transferCategoryId)); }
+      catch (error) { return toolError(error, 'actual_close_account', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_reopen_account',
+    {
+      title: 'Reopen Actual account',
+      description: 'Reopen a closed Actual account, synchronize, and verify the desired state.',
+      inputSchema: accountIdInputSchema,
+      outputSchema: accountMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ accountId }) => {
+      try { return successResult(await runtime.reopenAccount(accountId)); }
+      catch (error) { return toolError(error, 'actual_reopen_account', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_delete_account',
+    {
+      title: 'Delete empty Actual account',
+      description: 'DESTRUCTIVE OPERATION: Permanently delete an account only after literal confirmation and complete history proves it is empty.',
+      inputSchema: deleteAccountToolInputSchema,
+      outputSchema: accountDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ accountId, confirmDestructive }) => {
+      if (!confirmDestructive) return toolError(new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after explicitly authorizing this account deletion.',
+        'actual_delete_account',
+        false,
+        { entity: { type: 'account', id: accountId } }
+      ), 'actual_delete_account', logger);
+      try { return successResult(await runtime.deleteAccount(accountId)); }
+      catch (error) { return toolError(error, 'actual_delete_account', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_category_group',
+    {
+      title: 'Create Actual category group',
+      description: 'Create a visible expense or income category group, synchronize, and verify it.',
+      inputSchema: createCategoryGroupInputSchema,
+      outputSchema: categoryGroupMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async ({ name, isIncome }) => {
+      try { return successResult(await runtime.createCategoryGroup(name, isIncome)); }
+      catch (error) { return toolError(error, 'actual_create_category_group', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_update_category_group',
+    {
+      title: 'Rename Actual category group',
+      description: 'Rename an Actual category group without changing its type or visibility.',
+      inputSchema: updateCategoryGroupInputSchema,
+      outputSchema: categoryGroupMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ groupId, name }) => {
+      try { return successResult(await runtime.updateCategoryGroup(groupId, name)); }
+      catch (error) { return toolError(error, 'actual_update_category_group', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_delete_category_group',
+    {
+      title: 'Delete empty Actual category group',
+      description: 'DESTRUCTIVE OPERATION: Permanently delete a category group only after literal confirmation and a complete read proves it has no categories.',
+      inputSchema: deleteCategoryGroupToolInputSchema,
+      outputSchema: categoryGroupDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ groupId, confirmDestructive }) => {
+      if (!confirmDestructive) return toolError(new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after explicitly authorizing this category-group deletion.',
+        'actual_delete_category_group',
+        false,
+        { entity: { type: 'categoryGroup', id: groupId } }
+      ), 'actual_delete_category_group', logger);
+      try { return successResult(await runtime.deleteCategoryGroup(groupId)); }
+      catch (error) { return toolError(error, 'actual_delete_category_group', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_category',
+    {
+      title: 'Create Actual category',
+      description: 'Create a visible category whose income or expense type is derived from its persisted group.',
+      inputSchema: createCategoryInputSchema,
+      outputSchema: categoryMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async ({ name, groupId }) => {
+      try { return successResult(await runtime.createCategory(name, groupId)); }
+      catch (error) { return toolError(error, 'actual_create_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_update_category',
+    {
+      title: 'Rename Actual category',
+      description: 'Rename an Actual category without changing its group, type, or visibility.',
+      inputSchema: updateCategoryInputSchema,
+      outputSchema: categoryMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ categoryId, name }) => {
+      try { return successResult(await runtime.updateCategory(categoryId, name)); }
+      catch (error) { return toolError(error, 'actual_update_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_move_category',
+    {
+      title: 'Move Actual category',
+      description: 'Move a category to another group only when both persisted income or expense types match.',
+      inputSchema: moveCategoryInputSchema,
+      outputSchema: categoryMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ categoryId, targetGroupId }) => {
+      try { return successResult(await runtime.moveCategory(categoryId, targetGroupId)); }
+      catch (error) { return toolError(error, 'actual_move_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_hide_category',
+    {
+      title: 'Hide Actual category',
+      description: 'Set an Actual category to hidden and verify the persisted desired state.',
+      inputSchema: categoryIdInputSchema,
+      outputSchema: categoryMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ categoryId }) => {
+      try { return successResult(await runtime.hideCategory(categoryId)); }
+      catch (error) { return toolError(error, 'actual_hide_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_unhide_category',
+    {
+      title: 'Unhide Actual category',
+      description: 'Set an Actual category to visible and verify the persisted desired state.',
+      inputSchema: categoryIdInputSchema,
+      outputSchema: categoryMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ categoryId }) => {
+      try { return successResult(await runtime.unhideCategory(categoryId)); }
+      catch (error) { return toolError(error, 'actual_unhide_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_delete_category',
+    {
+      title: 'Delete unused Actual category',
+      description: 'DESTRUCTIVE OPERATION: Permanently delete a category only after literal confirmation and complete transaction and budget scans prove it is unused.',
+      inputSchema: deleteCategoryToolInputSchema,
+      outputSchema: categoryDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ categoryId, confirmDestructive }) => {
+      if (!confirmDestructive) return toolError(new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after explicitly authorizing this category deletion.',
+        'actual_delete_category',
+        false,
+        { entity: { type: 'category', id: categoryId } }
+      ), 'actual_delete_category', logger);
+      try { return successResult(await runtime.deleteCategory(categoryId)); }
+      catch (error) { return toolError(error, 'actual_delete_category', logger); }
     }
   );
 

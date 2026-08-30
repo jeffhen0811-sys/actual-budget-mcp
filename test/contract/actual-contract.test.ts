@@ -6,6 +6,8 @@ import { ActualClient } from '../../src/actual/client.js';
 import type { ActualConfig } from '../../src/config.js';
 import {
   accountSchema,
+  administeredCategoryGroupSchema,
+  administeredCategorySchema,
   categoryGroupSchema,
   transactionSchema,
   transactionsOutputSchema
@@ -66,6 +68,28 @@ describe('Actual data contracts observed through @actual-app/api', () => {
       groupName: 'Group',
       categories: [{ id: 'c', name: 'Hidden category', hidden: true }]
     }).categories[0]?.hidden).toBe(true);
+  });
+
+  it('accepts complete structural shapes and rejects fabricated defaults for absent SDK fields', async () => {
+    expect(administeredCategoryGroupSchema.parse({ id: 'g', name: 'Income', isIncome: true, hidden: false })).toEqual({
+      id: 'g', name: 'Income', isIncome: true, hidden: false
+    });
+    expect(administeredCategorySchema.parse({ id: 'c', name: 'Salary', groupId: 'g', isIncome: true, hidden: false })).toEqual({
+      id: 'c', name: 'Salary', groupId: 'g', isIncome: true, hidden: false
+    });
+    const dataDir = await mkdtemp(join(tmpdir(), 'actual-contract-optional-'));
+    directories.push(dataDir);
+    const api = fakeAdapter();
+    vi.mocked(api.getCategoryGroups).mockResolvedValue([{ id: 'g', name: 'Incomplete' }]);
+    const client = new ActualClient(api, async () => ({
+      serverUrl: 'http://actual.example:5006', password: 'contract-only-sentinel', syncId: 'budget', dataDir
+    }));
+    try {
+      await expect(client.updateCategoryGroup('g', 'Renamed')).rejects.toMatchObject({ code: 'PREFLIGHT_INCONCLUSIVE' });
+      expect(api.updateCategoryGroup).not.toHaveBeenCalled();
+    } finally {
+      await client.shutdown();
+    }
   });
 
   it('passes real-shape nullable SDK records through the production mapper and output schema', async () => {
