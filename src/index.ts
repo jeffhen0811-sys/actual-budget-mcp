@@ -28,3 +28,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     void stop(signal).finally(() => process.exit(0));
   });
 }
+
+process.stdin.once('end', () => {
+  void stop('STDIN_EOF').finally(() => process.exit(0));
+});

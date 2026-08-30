@@ -101,6 +101,16 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
     await client.shutdown();
   });
 
+  it('returns not found and does not sync when the SDK updates or deletes no transaction', async () => {
+    const { api, client } = await fixture();
+    vi.mocked(api.updateTransaction).mockResolvedValue([]);
+    vi.mocked(api.deleteTransaction).mockResolvedValue([]);
+    await expect(client.updateTransaction('missing', { notes: 'none' })).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(client.deleteTransaction('missing')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(api.sync).not.toHaveBeenCalled();
+    await client.shutdown();
+  });
+
   it('returns not found without a raw query and shuts the SDK down at most once', async () => {
     const { api, client } = await fixture();
     await expect(client.getAccount('missing')).rejects.toBeInstanceOf(PublicError);

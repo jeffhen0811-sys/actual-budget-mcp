@@ -1,0 +1,84 @@
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { TOOL_NAMES } from '../../src/mcp/server.js';
+import {
+  accountsOutputSchema,
+  categoriesOutputSchema,
+  healthOutputSchema,
+  payeesOutputSchema,
+  transactionsOutputSchema
+} from '../../src/mcp/contracts.js';
+import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
+import { CARD_TEST_ACCOUNT_NAME, loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
+
+const environment = await loadRealTestEnvironment();
+if (!environment.configured) console.warn(skipMessage(environment, 'MCP stdio E2E read suite'));
+const realDescribe = environment.configured ? describe : describe.skip;
+
+realDescribe.sequential('real MCP stdio read E2E', () => {
+  let running: RunningMcp;
+
+  beforeAll(async () => {
+    running = await startMcp('.actual-e2e-data/read');
+  });
+
+  afterAll(async () => {
+    await running?.close();
+  });
+
+  it('discovers the complete V1 tool surface through stdio', async () => {
+    const { tools } = await running.client.listTools();
+    expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
+  });
+
+  it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
+    expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+    const accounts = await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema);
+    expect(accounts.accounts.map(account => account.name)).toEqual(expect.arrayContaining([
+      REQUIRED_TEST_ACCOUNT_NAME,
+      CARD_TEST_ACCOUNT_NAME
+    ]));
+    expect((await callTool(running, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups.length).toBeGreaterThan(0);
+    const payees = await callTool(running, 'actual_list_payees', {}, payeesOutputSchema);
+    expect(payees.payees.map(payee => payee.name)).toEqual(expect.arrayContaining(['Empresa Teste', 'Netflix Teste']));
+  });
+
+  it('returns both accounts real transactions without nullable-output failures', async () => {
+    const { accounts } = await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema);
+    const payees = (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees;
+    const names = new Map(payees.map(payee => [payee.id, payee.name]));
+    for (const accountName of [REQUIRED_TEST_ACCOUNT_NAME, CARD_TEST_ACCOUNT_NAME]) {
+      const account = accounts.find(item => item.name === accountName);
+      expect(account).toBeDefined();
+      const { transactions } = await callTool(running, 'actual_get_transactions', {
+        accountId: account!.id,
+        startDate: '2026-08-01',
+        endDate: '2026-08-31'
+      }, transactionsOutputSchema);
+      expect(transactions.length).toBeGreaterThan(0);
+      if (accountName === REQUIRED_TEST_ACCOUNT_NAME) {
+        expect(transactions.some(transaction => transaction.imported_id === null)).toBe(true);
+        expect(transactions.some(transaction => transaction.notes === null)).toBe(true);
+        expect(transactions.map(transaction => transaction.payee ? names.get(transaction.payee) : undefined))
+          .toEqual(expect.arrayContaining(['Empresa Teste', 'Supermercado Teste', 'Companhia de Energia Teste', 'Posto Teste']));
+      } else {
+        expect(transactions.map(transaction => transaction.payee ? names.get(transaction.payee) : undefined))
+          .toEqual(expect.arrayContaining(['Netflix Teste', 'Restaurante Teste', 'Loja Online Teste']));
+      }
+    }
+  });
+
+  it('returns structured errors for invalid input, remains alive, and never leaks credentials', async () => {
+    const cases = [
+      ['actual_get_account', { accountId: 'missing-account-id' }],
+      ['actual_get_transactions', { accountId: 'invalid', startDate: '2026-02-30', endDate: '2026-03-01' }],
+      ['actual_get_transactions', { accountId: 'invalid', startDate: '2024-01-01', endDate: '2025-01-01' }],
+      ['actual_delete_transaction', { transactionId: 'missing-transaction-id', confirmDestructive: false }]
+    ] as const;
+    for (const [name, args] of cases) {
+      const error = await callToolExpectingError(running, name, args);
+      assertNoConfiguredSecrets(error);
+    }
+    expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+    assertNoConfiguredSecrets(running.stderr());
+  });
+});

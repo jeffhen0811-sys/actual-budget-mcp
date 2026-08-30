@@ -217,7 +217,11 @@ export class ActualClient {
       ...(transaction.category === undefined ? {} : { category: transaction.category }),
       ...(transaction.notes === undefined ? {} : { notes: transaction.notes }),
       ...(transaction.cleared === undefined ? {} : { cleared: transaction.cleared }),
-      ...(transaction.imported_id === undefined ? {} : { imported_id: transaction.imported_id })
+      ...(transaction.reconciled === undefined ? {} : { reconciled: transaction.reconciled }),
+      ...(transaction.imported_id === undefined ? {} : { imported_id: transaction.imported_id }),
+      ...(transaction.imported_payee === undefined ? {} : { imported_payee: transaction.imported_payee }),
+      ...(transaction.transfer_id === undefined ? {} : { transfer_id: transaction.transfer_id }),
+      ...(transaction.starting_balance_flag === undefined ? {} : { starting_balance_flag: transaction.starting_balance_flag })
     };
   }
 
@@ -257,14 +261,20 @@ export class ActualClient {
 
   updateTransaction(transactionId: string, fields: Partial<AdapterTransaction>) {
     return this.mutate('actual_update_transaction', async () => {
-      await this.api.updateTransaction(transactionId, fields);
+      const updated = await this.api.updateTransaction(transactionId, fields);
+      if (Array.isArray(updated) && updated.length === 0) {
+        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', 'actual_update_transaction', false);
+      }
       return { success: true as const, transactionId };
     });
   }
 
   deleteTransaction(transactionId: string) {
     return this.mutate('actual_delete_transaction', async () => {
-      await this.api.deleteTransaction(transactionId);
+      const deleted = await this.api.deleteTransaction(transactionId);
+      if (Array.isArray(deleted) && deleted.length === 0) {
+        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', 'actual_delete_transaction', false);
+      }
       return { success: true as const, transactionId };
     });
   }

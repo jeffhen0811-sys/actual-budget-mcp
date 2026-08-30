@@ -4,8 +4,9 @@ export interface AdapterAccount { id: string; name: string; offbudget?: boolean;
 export interface AdapterCategoryGroup { id: string; name: string; categories?: Array<{ id: string; name: string; hidden?: boolean }> }
 export interface AdapterPayee { id: string; name: string }
 export interface AdapterTransaction {
-  id: string; account: string; date: string; amount: number; payee?: string | null; category?: string;
-  notes?: string; cleared?: boolean; imported_id?: string;
+  id: string; account: string; date: string; amount: number; payee?: string | null; category?: string | null;
+  notes?: string | null; cleared?: boolean; reconciled?: boolean; imported_id?: string | null;
+  imported_payee?: string | null; transfer_id?: string | null; starting_balance_flag?: boolean;
 }
 export interface ImportTransaction {
   account: string; date: string; amount: number; imported_id: string; payee_name?: string;

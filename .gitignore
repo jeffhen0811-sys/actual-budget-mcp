@@ -1,9 +1,14 @@
 node_modules/
 dist/
 coverage/
+graphify-out/
 .env
 .env.*
 !.env.example
+!.env.integration.local.example
+.env.integration.local
+.actual-test-data/
+.actual-e2e-data/
 *.log
 .DS_Store
 .actual-budget-mcp.lock

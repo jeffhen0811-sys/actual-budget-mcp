@@ -122,9 +122,76 @@ npm start
 
 Build files are emitted only to `dist/`. The package exposes the compiled entrypoint as `actual-budget-mcp` for future package installation.
 
-## Tests
+## Testing
 
-Tests use SDK doubles and in-memory or child-process MCP transports. Public CI never receives Actual credentials and never mutates a real budget. Run the opt-in real acceptance flow only as described in [docs/manual-acceptance.md](docs/manual-acceptance.md).
+The test architecture has four layers. Production schemas, mappers, services, adapters, tool handlers, and the compiled stdio entrypoint are reused by the real suites; the integration harness does not implement an alternate Actual client.
+
+Actual transaction output preserves explicit `null` values returned by the SDK and omits only fields that are `undefined`. This applies to nullable optional fields such as `notes`, `payee`, `category`, `imported_id`, `imported_payee`, and `transfer_id`; no placeholder strings are invented.
+
+### Unit tests
+
+Unit tests are fast, isolated, and use SDK doubles where appropriate. They cover environment validation, lifecycle, mapping, guards, error handling, log sanitization, and security rules.
+
+```bash
+npm test
+npm run test:coverage
+```
+
+### Contract tests
+
+Contract tests encode legitimate Actual shapes observed through the pinned SDK and the real integration suite, including manual transactions with nullable import metadata, Starting Balance, imported transactions, optional fields, integer amounts, closed/off-budget accounts, and category visibility.
+
+```bash
+npm run test:contract
+```
+
+### Real Actual integration tests
+
+Integration tests initialize `@actual-app/api`, authenticate, download the configured budget, call the production `ActualClient`, validate production output schemas, synchronize mutations, and shut the SDK down. They use `.actual-test-data/` and run serially.
+
+```bash
+npm run test:integration
+npm run test:integration:read
+ACTUAL_INTEGRATION_ALLOW_WRITES=true npm run test:integration:write
+```
+
+`test:integration` always includes read coverage. Its write suite is reported as skipped unless `ACTUAL_INTEGRATION_ALLOW_WRITES` is exactly `true`.
+
+### MCP E2E tests
+
+E2E tests build and launch `node dist/index.js`, then use the official MCP client over stdio. They validate tool discovery, schemas, JSON text and `structuredContent`, protocol-safe stdout, errors, real Actual calls, idempotency, shutdown, and process restart. They use `.actual-e2e-data/` and run serially.
+
+```bash
+npm run test:e2e
+npm run test:e2e:read
+ACTUAL_INTEGRATION_ALLOW_WRITES=true npm run test:e2e:write
+```
+
+### Write test safety
+
+Real writes are disabled by default. Write tests refuse to continue unless the configured account name is exactly `TESTE MCP - Conta Corrente` and that account exists exactly once. Every run creates a UUID-scoped `imported_id` beginning with `mcp-integration-test:`. Update and delete operate only on the captured transaction, and cleanup revalidates the captured ID, exact import ID, prefix, and `MCP INTEGRATION TEST` payee before deletion. Cleanup runs even after a failed assertion and reports only the transaction ID and import ID if manual cleanup is required.
+
+Use a dedicated test account only. Never enable write tests against a personal or production account.
+
+### Local environment
+
+Copy the placeholder file and edit only the ignored local copy:
+
+```bash
+cp .env.integration.local.example .env.integration.local
+```
+
+The required variables are `ACTUAL_SERVER_URL`, `ACTUAL_PASSWORD`, and `ACTUAL_SYNC_ID`. Keep `ACTUAL_DATA_DIR=.actual-test-data`, `ACTUAL_INTEGRATION_ALLOW_WRITES=false`, and `ACTUAL_INTEGRATION_TEST_ACCOUNT_NAME=TESTE MCP - Conta Corrente` unless intentionally running the guarded write suite. Commands load `.env.integration.local` automatically. If it is absent or incomplete, real suites skip with a clear message so public CI does not need private credentials.
+
+Do not run integration and E2E processes concurrently against the same cache directory. Each suite uses its own cache and shuts down the SDK or child process before releasing it.
+
+### Running all tests
+
+```bash
+npm run test:all
+```
+
+`test:all` runs type checking, unit tests, contract tests, configured real integration/E2E suites, and a final build. Public GitHub Actions intentionally runs only `npm ci`, type checking, unit tests, contract tests, and build. A future self-hosted runner can execute the existing real suites without changing them.
 
 ## Updating
 

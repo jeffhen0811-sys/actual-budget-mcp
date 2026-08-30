@@ -3,7 +3,8 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    coverage: { reporter: ['text', 'json', 'html'] },
-    include: ['test/*.test.ts']
+    include: ['test/contract/**/*.test.ts'],
+    fileParallelism: false,
+    maxWorkers: 1
   }
 });
