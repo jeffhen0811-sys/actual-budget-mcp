@@ -3,9 +3,12 @@ import { actualApiAdapter } from '../../src/actual/adapter.js';
 import { ActualClient } from '../../src/actual/client.js';
 import {
   accountsOutputSchema,
+  administeredPayeeSchema,
   categoriesOutputSchema,
   healthOutputSchema,
   payeesOutputSchema,
+  ruleSchema,
+  rulesOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
 import {
@@ -65,6 +68,27 @@ realDescribe.sequential('real Actual read integration', () => {
       'Restaurante Teste',
       'Loja Online Teste'
     ]));
+  });
+
+  it('reads individual ordinary and transfer payees and returns exact absent-ID errors', async () => {
+    const listed = await client.listPayees();
+    const payees = await Promise.all(listed.map(payee => client.getPayee(payee.id)));
+    for (const payee of payees) expect(() => administeredPayeeSchema.parse(payee)).not.toThrow();
+    expect(payees.some(payee => typeof payee.transferAccountId === 'string')).toBe(true);
+    expect(payees.some(payee => payee.transferAccountId === null)).toBe(true);
+    await expect(client.getPayee('mcp-read-missing-payee')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('validates the complete ranked real rule list and exact absent-ID behavior', async () => {
+    const rules = await client.listRules();
+    expect(() => rulesOutputSchema.parse({ rules })).not.toThrow();
+    for (const rule of rules) {
+      expect(() => ruleSchema.parse(rule)).not.toThrow();
+      await expect(client.getRule(rule.id)).resolves.toEqual(rule);
+    }
+    const stageOrder = rules.map(rule => ({ pre: 0, default: 1, post: 2 })[rule.stage]);
+    expect(stageOrder).toEqual([...stageOrder].sort((left, right) => left - right));
+    await expect(client.getRule('mcp-read-missing-rule')).rejects.toMatchObject({ code: 'NOT_FOUND' });
   });
 
   it('accepts all real checking-account transactions, including manual nulls and Starting Balance', async () => {

@@ -17,9 +17,9 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 
 1. Run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
 2. Launch `node dist/index.js` through an MCP inspector or compatible client.
-3. Confirm that exactly ten tools are discoverable.
+3. Confirm that exactly 34 tools are discoverable and that neither `actual_run_rules` nor `actual_preview_rule` is present.
 4. Call `actual_health` and confirm that `connected` and `budgetLoaded` are true.
-5. Call account, category, payee, and bounded transaction read tools. Verify integer minor-unit amounts and verbatim user-authored values.
+5. Call account, category, payee, rule, and bounded transaction read tools. Verify integer minor-unit amounts, ranked `pre`/`default`/`post` stages, transfer-payee context, and verbatim user-authored values.
 
 ## Authorized Mutation Checks
 
@@ -30,6 +30,11 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 5. Call `actual_sync` and verify a successful timestamped result.
 6. Call `actual_delete_transaction` only with the controlled transaction ID and `confirmDestructive: true`.
 7. Call `actual_sync` again and confirm that the controlled transaction is absent.
+8. Create a uniquely named temporary payee, read it, rename it, call delete without confirmation to inspect zero reference counts, then delete it with `confirmDestructive: true`.
+9. Create unique source and target payees plus one owned source transaction. Call merge without confirmation to inspect impact, then merge with confirmation. Verify source absence, target presence, and transaction remapping.
+10. Create a uniquely owned temporary payee and a `pre` rule that matches a unique `imported_payee` and sets that payee. Read and update the rule, import a unique transaction, and verify Actual applied the rule.
+11. Call rule deletion without confirmation, then delete the exact temporary rule with confirmation. Verify the already imported transaction is unchanged.
+12. Clean exact IDs in this order: transactions, rules, payees, categories, category groups, accounts. Confirm no owned ID remains and the permanent payee/rule/account/category/transaction fingerprint is unchanged.
 
 ## Restart Check
 
@@ -38,4 +43,4 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 3. Verify health and reads.
 4. Repeat the original import and confirm that the previously deleted `imported_id` is not recreated under the default policy.
 
-Record the date, Actual Server version, MCP commit, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials.
+Record the date, Actual Server version, MCP version/commit, exact 34-tool inventory result, payee/rule capability outcomes, cleanup result, permanent fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials.

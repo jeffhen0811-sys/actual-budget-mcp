@@ -1,10 +1,4 @@
-# mcp-stdio-runtime Specification
-
-## Purpose
-
-Define a protocol-safe MCP stdio surface with discoverable tools, validated inputs, structured outputs, behavioral annotations, and consistently sanitized diagnostics.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: MCP tool surface
 The server SHALL register exactly 34 tools at startup: all 24 v0.2.0 tools; five new payee tools `actual_get_payee`, `actual_create_payee`, `actual_update_payee`, `actual_delete_payee`, and `actual_merge_payees`; and five rule tools `actual_list_rules`, `actual_get_rule`, `actual_create_rule`, `actual_update_rule`, and `actual_delete_rule`. The server MUST NOT register `actual_run_rules`, `actual_preview_rule`, a generic CRUD tool, or an alias for any named operation.
@@ -16,46 +10,6 @@ The server SHALL register exactly 34 tools at startup: all 24 v0.2.0 tools; five
 #### Scenario: No unsupported or artificial aliases
 - **WHEN** the v0.3.0 tool surface is inspected
 - **THEN** it contains no manual rule-run tool, rule-preview tool, reorder tool, generic CRUD tool, internal API tool, or alias beyond the named set
-
-### Requirement: Standard stdio transport
-The server SHALL communicate with clients through MCP stdio. Stdout MUST contain only protocol frames, while application and SDK diagnostics MUST be written to stderr.
-
-#### Scenario: Server starts
-- **WHEN** the server process starts under an MCP client
-- **THEN** startup diagnostics appear only on stderr and stdout remains protocol-valid
-
-#### Scenario: Tool emits diagnostic logging
-- **WHEN** a tool logs progress or an error
-- **THEN** no diagnostic text is written outside the MCP protocol on stdout
-
-### Requirement: Strict input validation
-Every tool input SHALL be validated by a strict Zod schema before the handler performs an Actual operation. Unknown fields SHALL be rejected, strings SHALL be bounded and non-empty where required, and date and amount rules SHALL be enforced by the advertised schema or its validation refinements.
-
-#### Scenario: Invalid tool arguments
-- **WHEN** a client supplies malformed, missing, or unknown arguments
-- **THEN** the call returns an MCP-visible input error and the Actual adapter is not invoked
-
-### Requirement: Structured and compatible results
-Every successful tool SHALL return machine-readable structured content conforming to a declared output schema and SHALL also provide a text content representation for clients that do not consume structured content.
-
-#### Scenario: Structured-capable client
-- **WHEN** a client calls a successful tool and reads structured content
-- **THEN** the returned object validates against the tool's declared output schema
-
-#### Scenario: Text-only client
-- **WHEN** a client consumes only text content
-- **THEN** it receives a valid JSON representation of the same public result without secret fields
-
-### Requirement: English MCP-authored content
-The server SHALL provide all tool titles, tool descriptions, schema descriptions, response labels, status messages, validation messages, and public error messages in English. Values read from or written to user-owned Actual fields SHALL remain verbatim and MUST NOT be translated by the MCP server.
-
-#### Scenario: Server-authored response and error text
-- **WHEN** a tool returns a success response, validation failure, or operational error
-- **THEN** every server-authored label and message is in English
-
-#### Scenario: User-authored Actual data
-- **WHEN** a returned account, payee, category, or transaction contains text stored by the user in a language other than English
-- **THEN** the stored value is returned verbatim without translation or reinterpretation
 
 ### Requirement: Tool behavioral annotations
 Read-only tools SHALL declare a read-only hint. `actual_create_payee` SHALL declare mutating, non-destructive, idempotent behavior because an exact existing name is a no-op; other entity create operations, including `actual_create_rule`, SHALL remain non-idempotent. Desired-state updates SHALL declare mutating, non-destructive, idempotent behavior. Account close/reopen, category move/visibility, and explicit sync SHALL retain their current idempotency annotations. Transaction, account, category-group, category, payee, and rule deletions plus payee merge SHALL declare mutating, destructive, non-idempotent behavior. Annotations MUST accurately reflect retry semantics but SHALL NOT replace server-side validation, preflight, or destructive confirmation.
@@ -83,34 +37,7 @@ Operational failures SHALL be returned as MCP tool errors rather than malformed 
 - **WHEN** an unexpected exception occurs
 - **THEN** the caller receives a generic sanitized internal error while the detailed sanitized diagnostic is written to stderr
 
-### Requirement: Credential redaction
-The server MUST redact the configured Actual password and common secret-bearing patterns from logs, errors, health data, and tool results. The system MUST NOT log complete environment objects.
-
-#### Scenario: Error contains configured password
-- **WHEN** an upstream error message unexpectedly contains the configured password
-- **THEN** every client-facing result and stderr log replaces that value with a redaction marker
-
-#### Scenario: Health response
-- **WHEN** `actual_health` returns its status
-- **THEN** the result contains no password, token, environment dump, or URL user-info credentials
-
-### Requirement: Client independence
-The MCP server SHALL remain independent of Alfred and Hermes-specific runtime APIs. Hermes-specific material SHALL be limited to deployment documentation and configuration examples.
-
-#### Scenario: Non-Hermes MCP client
-- **WHEN** another standards-compatible MCP client launches the process over stdio
-- **THEN** it can discover and invoke the V1 tools without Alfred or Hermes libraries
-
-### Requirement: Preserve v0.1.0 public contracts
-The ten v0.1.0 tools MUST retain their names and compatible input and output contracts. In particular, `actual_list_categories` SHALL continue to return `categoryGroups` containing `groupId`, `groupName`, and nested categories with `id`, `name`, and `hidden`; richer internal models and new mutation outputs MUST NOT alter that established shape.
-
-#### Scenario: Existing category-list consumer
-- **WHEN** a v0.1.0 client validates a v0.2.0 `actual_list_categories` result against the existing schema
-- **THEN** the result remains valid without accepting new or renamed fields
-
-#### Scenario: Existing tool invocation
-- **WHEN** a client invokes any of the ten existing tools with a previously valid request
-- **THEN** the request and compatible response remain supported in v0.2.0
+## ADDED Requirements
 
 ### Requirement: Preserve v0.2.0 public contracts
 All 24 v0.2.0 tools MUST retain their names and compatible strict input and output contracts. In particular, `actual_list_payees` SHALL continue to return items containing exactly `id` and `name`, and existing account, category, transaction, health, synchronization, and structural-administration results MUST remain valid for previous consumers.

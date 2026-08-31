@@ -4,7 +4,10 @@ import {
   accountsOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  payeeOutputSchema,
   payeesOutputSchema,
+  ruleOutputSchema,
+  rulesOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
@@ -25,21 +28,22 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers exactly 24 v0.2.0 tools with strict schemas and structural annotations through stdio', async () => {
+  it('discovers exactly 34 v0.3.0 tools with strict schemas and structural annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(24);
+    expect(tools).toHaveLength(34);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
       expect(tool.description).toEqual(expect.any(String));
     }
-    for (const name of ['actual_delete_account', 'actual_delete_category_group', 'actual_delete_category']) {
+    for (const name of ['actual_delete_account', 'actual_delete_category_group', 'actual_delete_category', 'actual_delete_payee', 'actual_merge_payees', 'actual_delete_rule']) {
       const tool = tools.find(candidate => candidate.name === name);
       expect(tool?.description).toContain('DESTRUCTIVE OPERATION');
       expect(tool?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
       expect(tool?.inputSchema.required).toContain('confirmDestructive');
     }
+    expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
   });
 
   it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
@@ -55,7 +59,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       });
       assertNoConfiguredSecrets(result);
     }
-    expect((await running.client.listTools()).tools).toHaveLength(24);
+    expect((await running.client.listTools()).tools).toHaveLength(34);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
@@ -68,6 +72,19 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     expect((await callTool(running, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups.length).toBeGreaterThan(0);
     const payees = await callTool(running, 'actual_list_payees', {}, payeesOutputSchema);
     expect(payees.payees.map(payee => payee.name)).toEqual(expect.arrayContaining(['Empresa Teste', 'Netflix Teste']));
+  });
+
+  it('reads individual payees and the complete ranked rule surface through compiled stdio', async () => {
+    const payees = (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees;
+    const detailed = [];
+    for (const payee of payees) detailed.push((await callTool(running, 'actual_get_payee', { payeeId: payee.id }, payeeOutputSchema)).payee);
+    expect(detailed.some(payee => typeof payee.transferAccountId === 'string')).toBe(true);
+    const rules = (await callTool(running, 'actual_list_rules', {}, rulesOutputSchema)).rules;
+    for (const rule of rules) {
+      expect((await callTool(running, 'actual_get_rule', { ruleId: rule.id }, ruleOutputSchema)).rule).toEqual(rule);
+    }
+    const stageOrder = rules.map(rule => ({ pre: 0, default: 1, post: 2 })[rule.stage]);
+    expect(stageOrder).toEqual([...stageOrder].sort((left, right) => left - right));
   });
 
   it('returns both accounts real transactions without nullable-output failures', async () => {
@@ -98,6 +115,8 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
   it('returns structured errors for invalid input, remains alive, and never leaks credentials', async () => {
     const cases = [
       ['actual_get_account', { accountId: 'missing-account-id' }],
+      ['actual_get_payee', { payeeId: 'missing-payee-id' }],
+      ['actual_get_rule', { ruleId: 'missing-rule-id' }],
       ['actual_get_transactions', { accountId: 'invalid', startDate: '2026-02-30', endDate: '2026-03-01' }],
       ['actual_get_transactions', { accountId: 'invalid', startDate: '2024-01-01', endDate: '2025-01-01' }],
       ['actual_delete_transaction', { transactionId: 'missing-transaction-id', confirmDestructive: false }]

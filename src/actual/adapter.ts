@@ -9,7 +9,32 @@ export interface AdapterCategory {
 export interface AdapterCategoryGroup {
   id: string; name: string; is_income?: boolean; hidden?: boolean; categories?: AdapterCategory[];
 }
-export interface AdapterPayee { id: string; name: string }
+export interface AdapterPayee { id: string; name: string; transfer_acct?: string | null }
+export interface AdapterRuleCondition {
+  field: string;
+  op: string;
+  value: unknown;
+  options?: { inflow?: boolean; outflow?: boolean; month?: boolean; year?: boolean } | null;
+  conditionsOp?: 'and' | 'or';
+  type?: 'id' | 'boolean' | 'date' | 'number' | 'string';
+  customName?: string;
+  queryFilter?: Record<string, { $oneof: string[] }>;
+}
+export interface AdapterRuleAction {
+  op: string;
+  field?: string | null;
+  value: unknown;
+  options?: { template?: string; formula?: string; splitIndex?: number; method?: string } | null;
+  type?: string;
+}
+export interface AdapterRule {
+  id: string;
+  stage: 'pre' | null | 'post';
+  conditionsOp: 'and' | 'or';
+  conditions: AdapterRuleCondition[];
+  actions: AdapterRuleAction[];
+  tombstone?: boolean;
+}
 export interface AdapterTransaction {
   id: string; account: string; date: string; amount: number; payee?: string | null; category?: string | null;
   notes?: string | null; cleared?: boolean; reconciled?: boolean; imported_id?: string | null;
@@ -53,6 +78,15 @@ export interface ActualApiAdapter {
   getBudgetMonths(): Promise<string[]>;
   getBudgetMonth(month: string): Promise<AdapterBudgetMonth>;
   getPayees(): Promise<AdapterPayee[]>;
+  createPayee(payee: { name: string }): Promise<string>;
+  updatePayee(id: string, fields: { name: string }): Promise<void>;
+  deletePayee(id: string): Promise<void>;
+  mergePayees(targetId: string, mergeIds: string[]): Promise<void>;
+  getPayeeRules(payeeId: string): Promise<AdapterRule[]>;
+  getRules(): Promise<AdapterRule[]>;
+  createRule(rule: Omit<AdapterRule, 'id'>): Promise<AdapterRule>;
+  updateRule(rule: AdapterRule): Promise<AdapterRule>;
+  deleteRule(id: string): Promise<boolean>;
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<AdapterTransaction[]>;
   importTransactions(accountId: string, transactions: ImportTransaction[], options: { reimportDeleted: false }): Promise<{ added: string[]; updated: string[]; errors: Array<{ message: string }> }>;
   updateTransaction(id: string, fields: Partial<AdapterTransaction>): Promise<unknown>;
@@ -114,6 +148,15 @@ export const actualApiAdapter: ActualApiAdapter = {
   getBudgetMonths: actual.getBudgetMonths,
   getBudgetMonth: actual.getBudgetMonth as (month: string) => Promise<AdapterBudgetMonth>,
   getPayees: actual.getPayees,
+  createPayee: actual.createPayee,
+  updatePayee: actual.updatePayee,
+  deletePayee: actual.deletePayee,
+  mergePayees: actual.mergePayees,
+  getPayeeRules: actual.getPayeeRules as (payeeId: string) => Promise<AdapterRule[]>,
+  getRules: actual.getRules as () => Promise<AdapterRule[]>,
+  createRule: actual.createRule as unknown as (rule: Omit<AdapterRule, 'id'>) => Promise<AdapterRule>,
+  updateRule: actual.updateRule as unknown as (rule: AdapterRule) => Promise<AdapterRule>,
+  deleteRule: actual.deleteRule,
   getTransactions: actual.getTransactions,
   importTransactions: actual.importTransactions,
   updateTransaction: actual.updateTransaction,

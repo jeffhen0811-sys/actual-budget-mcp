@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ResourceRegistry } from './real/resources.js';
+import { assertPayeeWriteAllowed, PERMANENT_TEST_PAYEES } from './real/ownership.js';
 
 describe('real-test exact-ID resource registry', () => {
   it('cleans exact IDs in reverse dependency order and accumulates safe failures', async () => {
@@ -7,16 +8,20 @@ describe('real-test exact-ID resource registry', () => {
     registry.register('account', 'a', 'Account');
     registry.register('categoryGroup', 'g', 'Group');
     registry.register('category', 'c', 'Category');
+    registry.register('payee', 'p', 'Temporary Payee');
+    registry.register('rule', 'r', 'Temporary Rule');
     registry.register('transaction', 't', 'Transaction');
     const order: string[] = [];
     const cleaners = {
       transaction: vi.fn(async resource => { order.push(resource.kind); }),
+      rule: vi.fn(async resource => { order.push(resource.kind); }),
+      payee: vi.fn(async resource => { order.push(resource.kind); }),
       category: vi.fn(async resource => { order.push(resource.kind); }),
       categoryGroup: vi.fn(async resource => { order.push(resource.kind); }),
       account: vi.fn(async resource => { order.push(resource.kind); })
     };
     await registry.cleanup(cleaners);
-    expect(order).toEqual(['transaction', 'category', 'categoryGroup', 'account']);
+    expect(order).toEqual(['transaction', 'rule', 'payee', 'category', 'categoryGroup', 'account']);
     expect(registry.snapshot()).toEqual([]);
 
     registry.register('account', 'safe-id', 'Safe name');
@@ -26,5 +31,17 @@ describe('real-test exact-ID resource registry', () => {
 
     await expect(registry.cleanup({ ...cleaners, account: vi.fn().mockRejectedValue({ code: 'ACCOUNT_NOT_EMPTY', message: 'hidden' }) }))
       .rejects.toThrow('account id=safe-id name=Safe name errorCode=ACCOUNT_NOT_EMPTY');
+  });
+
+  it('refuses permanent payee registration and reports exact leftover identities', () => {
+    const registry = new ResourceRegistry();
+    for (const name of PERMANENT_TEST_PAYEES) {
+      expect(() => registry.register('payee', `permanent-${name}`, name)).toThrow('permanent payee fixture');
+      for (const action of ['rename', 'delete', 'merge', 'reuse'] as const) {
+        expect(() => assertPayeeWriteAllowed(name, action)).toThrow('permanent payee fixture');
+      }
+    }
+    registry.register('rule', 'rule-id', 'Temporary Rule');
+    expect(() => registry.assertEmpty()).toThrow('rule id=rule-id name=Temporary Rule');
   });
 });

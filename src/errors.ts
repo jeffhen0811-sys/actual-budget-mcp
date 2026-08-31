@@ -12,6 +12,12 @@ export type PublicErrorCode =
   | 'ACCOUNT_NOT_EMPTY'
   | 'CATEGORY_GROUP_NOT_EMPTY'
   | 'CATEGORY_IN_USE'
+  | 'PAYEE_IN_USE'
+  | 'TRANSFER_PAYEE_PROTECTED'
+  | 'INVALID_REFERENCE'
+  | 'UNSUPPORTED_RULE_SHAPE'
+  | 'PROTECTED_ACTUAL_ENTITY'
+  | 'MERGE_PARTIAL_STATE'
   | 'UNSAFE_CLOSE_WOULD_DELETE_ACCOUNT'
   | 'TRANSFER_ACCOUNT_REQUIRED'
   | 'INCOMPATIBLE_CATEGORY_GROUP_TYPE'
@@ -26,7 +32,7 @@ export type PublicErrorCode =
 export interface PublicErrorMetadata {
   details?: Record<string, unknown>;
   recoveryAction?: string;
-  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction'; id?: string; name?: string };
+  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction' | 'payee' | 'rule'; id?: string; name?: string };
   state?: 'local_change_may_have_succeeded' | 'synchronized_but_unverified';
   partialState?: boolean;
 }

@@ -12,6 +12,14 @@ import {
   healthOutputSchema,
   importTransactionsOutputSchema,
   payeesOutputSchema,
+  payeeDeletionOutputSchema,
+  payeeMergeOutputSchema,
+  payeeMutationOutputSchema,
+  payeeOutputSchema,
+  ruleDeletionOutputSchema,
+  ruleMutationOutputSchema,
+  ruleOutputSchema,
+  rulesOutputSchema,
   syncOutputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema
@@ -19,10 +27,13 @@ import {
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
 import { loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
 import { matchesTemporaryTestPayee, TEMPORARY_TEST_PAYEE } from '../real/ownership.js';
+import { assertPayeeWriteAllowed } from '../real/ownership.js';
 import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 import { ResourceRegistry } from '../real/resources.js';
 
 const TEST_DATE = '2026-08-30';
+const OPENING_RANGE_START = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+const OPENING_RANGE_END = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
 const DATA_DIR = '.actual-e2e-data/write';
 const environment = await loadRealTestEnvironment();
 if (!environment.configured) console.warn(skipMessage(environment, 'MCP stdio E2E write suite'));
@@ -42,6 +53,7 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       listAccounts: async () => (await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema)).accounts,
       listCategories: async () => (await callTool(running, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups,
       listPayees: async () => (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees,
+      listRules: async () => (await callTool(running, 'actual_list_rules', {}, rulesOutputSchema)).rules,
       getTransactions: async (targetAccountId: string, startDate: string, endDate: string) =>
         (await callTool(running, 'actual_get_transactions', { accountId: targetAccountId, startDate, endDate }, transactionsOutputSchema)).transactions
     };
@@ -93,10 +105,13 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       if (running && accountId && importedId) {
         await registry.cleanup({
           transaction: async resource => { await callTool(running, 'actual_delete_transaction', { transactionId: resource.id, confirmDestructive: true }, transactionMutationOutputSchema); },
+          rule: async resource => { await callTool(running, 'actual_delete_rule', { ruleId: resource.id, confirmDestructive: true }, ruleDeletionOutputSchema); },
+          payee: async resource => { assertPayeeWriteAllowed(resource.name, 'delete'); await callTool(running, 'actual_delete_payee', { payeeId: resource.id, confirmDestructive: true }, payeeDeletionOutputSchema); },
           category: async resource => { await callTool(running, 'actual_delete_category', { categoryId: resource.id, confirmDestructive: true }, categoryDeletionOutputSchema); },
           categoryGroup: async resource => { await callTool(running, 'actual_delete_category_group', { groupId: resource.id, confirmDestructive: true }, categoryGroupDeletionOutputSchema); },
           account: async resource => { await callTool(running, 'actual_delete_account', { accountId: resource.id, confirmDestructive: true }, accountDeletionOutputSchema); }
         });
+        registry.assertEmpty();
         expect(await queryOwned(), `Cleanup failed for transactionId=${transactionId || '[unknown]'} imported_id=${importedId}`).toHaveLength(0);
         expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(baselineFingerprint);
       }
@@ -184,6 +199,114 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     expect(await queryOwned()).toHaveLength(0);
   });
 
+  it('runs a restart-safe payee lifecycle through MCP-only calls', async () => {
+    const runId = randomUUID();
+    const originalName = `Mcp E2e Payee ${runId}`;
+    const renamedName = `Mcp E2e Payee Renamed ${runId}`;
+    const created = await callTool(running, 'actual_create_payee', { name: originalName }, payeeMutationOutputSchema);
+    registry.register('payee', created.payee.id, originalName);
+    expect((await callTool(running, 'actual_get_payee', { payeeId: created.payee.id }, payeeOutputSchema)).payee.name).toBe(originalName);
+    expect((await callTool(running, 'actual_create_payee', { name: originalName }, payeeMutationOutputSchema)).changed).toBe(false);
+    assertPayeeWriteAllowed(originalName, 'rename');
+    const renamed = await callTool(running, 'actual_update_payee', { payeeId: created.payee.id, name: renamedName }, payeeMutationOutputSchema);
+    expect(renamed).toMatchObject({ changed: true, payee: { name: renamedName } });
+    registry.release('payee', created.payee.id);
+    registry.register('payee', created.payee.id, renamedName);
+    await restart();
+    expect((await callTool(running, 'actual_get_payee', { payeeId: created.payee.id }, payeeOutputSchema)).payee.name).toBe(renamedName);
+    const refusal = await callToolExpectingError(running, 'actual_delete_payee', { payeeId: created.payee.id });
+    expect(refusal.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
+    assertNoConfiguredSecrets(refusal);
+    assertPayeeWriteAllowed(renamedName, 'delete');
+    await callTool(running, 'actual_delete_payee', { payeeId: created.payee.id, confirmDestructive: true }, payeeDeletionOutputSchema);
+    registry.release('payee', created.payee.id);
+    await callToolExpectingError(running, 'actual_get_payee', { payeeId: created.payee.id });
+  });
+
+  it('merges uniquely owned payees with an owned source transaction through MCP-only calls', async () => {
+    const runId = randomUUID();
+    const sourceName = `Mcp E2e Merge Source ${runId}`;
+    const targetName = `Mcp E2e Merge Target ${runId}`;
+    const source = await callTool(running, 'actual_create_payee', { name: sourceName }, payeeMutationOutputSchema);
+    const target = await callTool(running, 'actual_create_payee', { name: targetName }, payeeMutationOutputSchema);
+    registry.register('payee', source.payee.id, sourceName);
+    registry.register('payee', target.payee.id, targetName);
+    const mergeImportedId = `mcp-e2e-merge:${runId}`;
+    const imported = await callTool(running, 'actual_import_transactions', {
+      accountId,
+      transactions: [{ date: TEST_DATE, amount: -654, imported_id: mergeImportedId, imported_payee: sourceName, payee_name: sourceName }]
+    }, importTransactionsOutputSchema);
+    for (const id of imported.added) registry.register('transaction', id, mergeImportedId);
+    const preflight = await callToolExpectingError(running, 'actual_merge_payees', {
+      sourcePayeeIds: [source.payee.id], targetPayeeId: target.payee.id
+    });
+    expect(preflight.structuredContent).toMatchObject({
+      error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED', details: { impacts: [expect.objectContaining({ relatedTransactionCount: 1 })] } }
+    });
+    assertPayeeWriteAllowed(sourceName, 'merge');
+    assertPayeeWriteAllowed(targetName, 'merge');
+    const merged = await callTool(running, 'actual_merge_payees', {
+      sourcePayeeIds: [source.payee.id], targetPayeeId: target.payee.id, confirmDestructive: true
+    }, payeeMergeOutputSchema);
+    expect(merged).toMatchObject({ targetPayee: { id: target.payee.id }, mergedSourcePayeeIds: [source.payee.id] });
+    registry.release('payee', source.payee.id);
+    await restart();
+    await callToolExpectingError(running, 'actual_get_payee', { payeeId: source.payee.id });
+    const remapped = (await callTool(running, 'actual_get_transactions', {
+      accountId, startDate: TEST_DATE, endDate: TEST_DATE
+    }, transactionsOutputSchema)).transactions.find(transaction => imported.added.includes(transaction.id));
+    expect(remapped).toMatchObject({ payee: target.payee.id });
+    for (const id of imported.added) {
+      await callTool(running, 'actual_delete_transaction', { transactionId: id, confirmDestructive: true }, transactionMutationOutputSchema);
+      registry.release('transaction', id);
+    }
+    await callTool(running, 'actual_delete_payee', { payeeId: target.payee.id, confirmDestructive: true }, payeeDeletionOutputSchema);
+    registry.release('payee', target.payee.id);
+  });
+
+  it('creates, updates, functionally executes, and deletes a rule using only MCP tool calls', async () => {
+    const runId = randomUUID();
+    const payeeName = `Mcp E2e Rule Payee ${runId}`;
+    const rawPayee = `MCP_E2E_RULE_MATCH_${runId}`;
+    const ruleImportedId = `mcp-e2e-rule:${runId}`;
+    const payee = await callTool(running, 'actual_create_payee', { name: payeeName }, payeeMutationOutputSchema);
+    registry.register('payee', payee.payee.id, payeeName);
+    const created = await callTool(running, 'actual_create_rule', {
+      stage: 'pre', conditionsOp: 'and',
+      conditions: [{ field: 'imported_payee', op: 'contains', value: rawPayee }],
+      actions: [{ op: 'set', field: 'payee', value: payee.payee.id }]
+    }, ruleMutationOutputSchema);
+    registry.register('rule', created.rule.id, `rule-${runId}`);
+    expect((await callTool(running, 'actual_get_rule', { ruleId: created.rule.id }, ruleOutputSchema)).rule).toEqual(created.rule);
+    expect((await callTool(running, 'actual_update_rule', { ruleId: created.rule.id, stage: 'default' }, ruleMutationOutputSchema)).rule.stage).toBe('default');
+    expect((await callTool(running, 'actual_update_rule', { ruleId: created.rule.id, stage: 'post' }, ruleMutationOutputSchema)).rule.stage).toBe('post');
+    expect((await callTool(running, 'actual_update_rule', { ruleId: created.rule.id, stage: 'pre' }, ruleMutationOutputSchema)).rule.stage).toBe('pre');
+    expect((await callTool(running, 'actual_update_rule', { ruleId: created.rule.id, stage: 'pre' }, ruleMutationOutputSchema)).changed).toBe(false);
+    const refusal = await callToolExpectingError(running, 'actual_delete_rule', { ruleId: created.rule.id });
+    expect(refusal.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
+
+    const imported = await callTool(running, 'actual_import_transactions', {
+      accountId,
+      transactions: [{ date: TEST_DATE, amount: -777, imported_id: ruleImportedId, imported_payee: rawPayee, payee_name: rawPayee }]
+    }, importTransactionsOutputSchema);
+    for (const id of imported.added) registry.register('transaction', id, ruleImportedId);
+    const functional = (await callTool(running, 'actual_get_transactions', {
+      accountId, startDate: TEST_DATE, endDate: TEST_DATE
+    }, transactionsOutputSchema)).transactions.find(transaction => imported.added.includes(transaction.id));
+    expect(functional).toMatchObject({ payee: payee.payee.id });
+    await callTool(running, 'actual_delete_rule', { ruleId: created.rule.id, confirmDestructive: true }, ruleDeletionOutputSchema);
+    registry.release('rule', created.rule.id);
+    expect((await callTool(running, 'actual_get_transactions', {
+      accountId, startDate: TEST_DATE, endDate: TEST_DATE
+    }, transactionsOutputSchema)).transactions.find(transaction => transaction.id === functional!.id)).toMatchObject({ payee: payee.payee.id });
+    for (const id of imported.added) {
+      await callTool(running, 'actual_delete_transaction', { transactionId: id, confirmDestructive: true }, transactionMutationOutputSchema);
+      registry.release('transaction', id);
+    }
+    await callTool(running, 'actual_delete_payee', { payeeId: payee.payee.id, confirmDestructive: true }, payeeDeletionOutputSchema);
+    registry.release('payee', payee.payee.id);
+  });
+
   it('exercises the complete structural lifecycle through real MCP stdio', async () => {
     const runId = randomUUID();
     const groupA = await callTool(running, 'actual_create_category_group', { name: `MCP_E2E_TEST_GROUP_A_${runId}` }, categoryGroupMutationOutputSchema);
@@ -213,7 +336,7 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     }, accountMutationOutputSchema);
     registry.register('account', account.account.id, account.account.name);
     const opening = (await callTool(running, 'actual_get_transactions', {
-      accountId: account.account.id, startDate: TEST_DATE, endDate: TEST_DATE
+      accountId: account.account.id, startDate: OPENING_RANGE_START, endDate: OPENING_RANGE_END
     }, transactionsOutputSchema)).transactions;
     expect(opening.length).toBeGreaterThan(0);
     for (const transaction of opening) registry.register('transaction', transaction.id, `opening-balance-${runId}`);
@@ -261,5 +384,42 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       assertNoConfiguredSecrets(result);
     }
     expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+  });
+
+  it('rejects negative payee and rule calls, unavailable tools, and remains safe and operational', async () => {
+    const missing = `missing-${randomUUID()}`;
+    const cases = [
+      ['actual_get_payee', { payeeId: missing }],
+      ['actual_get_rule', { ruleId: missing }],
+      ['actual_create_payee', { name: '   ' }],
+      ['actual_update_payee', { payeeId: missing, name: '' }],
+      ['actual_merge_payees', { sourcePayeeIds: [missing], targetPayeeId: missing, confirmDestructive: true }],
+      ['actual_update_rule', { ruleId: missing }],
+      ['actual_create_rule', {
+        stage: 'default', conditionsOp: 'and',
+        conditions: [{ field: 'amount', op: 'contains', value: 100 }],
+        actions: [{ op: 'delete-transaction', value: '' }]
+      }],
+      ['actual_create_rule', {
+        stage: 'default', conditionsOp: 'and',
+        conditions: [{ field: 'payee', op: 'is', value: missing }],
+        actions: [{ op: 'set', field: 'notes', value: 'never' }]
+      }]
+    ] as const;
+    for (const [name, args] of cases) {
+      const result = await callToolExpectingError(running, name, args);
+      assertNoConfiguredSecrets(result);
+    }
+    const listed = (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees;
+    const detailed = [];
+    for (const payee of listed) detailed.push((await callTool(running, 'actual_get_payee', { payeeId: payee.id }, payeeOutputSchema)).payee);
+    const transfer = detailed.find(payee => typeof payee.transferAccountId === 'string');
+    expect(transfer).toBeDefined();
+    const protectedResult = await callToolExpectingError(running, 'actual_update_payee', { payeeId: transfer!.id, name: 'Must Not Rename' });
+    expect(protectedResult.structuredContent).toMatchObject({ error: { code: 'TRANSFER_PAYEE_PROTECTED' } });
+    await expect(running.client.callTool({ name: 'actual_run_rules', arguments: {} })).rejects.toThrow('not found');
+    await expect(running.client.callTool({ name: 'actual_preview_rule', arguments: {} })).rejects.toThrow('not found');
+    expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+    assertNoConfiguredSecrets(running.stderr());
   });
 });

@@ -1,10 +1,4 @@
-# distribution-and-operations Specification
-
-## Purpose
-
-Define reproducible installation, execution, update, deployment, documentation, versioning, and verification behavior for distributing the MCP from GitHub and operating it with Hermes.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Package commands and executable
 The project SHALL report version `0.3.0` consistently in package metadata, lockfile root metadata, MCP server metadata, README, and CHANGELOG. It SHALL preserve `npm run dev`, `npm run build`, `npm start`, `npm test`, `npm run typecheck`, `npm run test:contract`, `npm run test:integration`, `npm run test:integration:read`, `npm run test:integration:write`, `npm run test:e2e`, `npm run test:e2e:read`, `npm run test:e2e:write`, and `npm run test:all`. `npm start` SHALL execute `node dist/index.js`, and package metadata SHALL keep the `actual-budget-mcp` executable targeting the compiled entry point.
@@ -16,21 +10,6 @@ The project SHALL report version `0.3.0` consistently in package metadata, lockf
 #### Scenario: Type validation
 - **WHEN** `npm run typecheck` is executed
 - **THEN** the TypeScript project is checked without emitting build artifacts
-
-### Requirement: GitHub installation script
-The repository SHALL provide an executable `install.sh` using `set -euo pipefail`. It SHALL verify Node.js and npm, require a supported Node.js version of at least 22, run `npm ci` when `package-lock.json` exists, build the project, verify `dist/index.js`, create the resolved Actual data directory when necessary, and print a sanitized success message with a Hermes configuration example. It MUST NOT request, persist, or print the Actual password.
-
-#### Scenario: Fresh supported installation
-- **WHEN** a user clones the repository and runs `./install.sh` with Node.js 22 or newer and npm available
-- **THEN** dependencies are installed reproducibly, the project is built, the data directory exists, and the script prints the next configuration step
-
-#### Scenario: Unsupported Node.js
-- **WHEN** the installed Node.js version is below 22
-- **THEN** installation stops before dependency installation with a clear version requirement
-
-#### Scenario: Build artifact missing
-- **WHEN** the build command exits without producing `dist/index.js`
-- **THEN** installation fails with a clear non-secret diagnostic
 
 ### Requirement: Predictable update script
 The repository SHALL provide an executable `update.sh` that performs a fast-forward-only Git pull, updates locked dependencies when needed, builds, and runs the verification defined by the script's existing design. It MUST support a clean v0.2.0 to v0.3.0 update and MUST NOT reset, discard, or overwrite local changes, environment configuration, the local Actual cache, `.actual-test-data`, MCP E2E cache data, or Hermes configuration.
@@ -46,24 +25,6 @@ The repository SHALL provide an executable `update.sh` that performs a fast-forw
 #### Scenario: Diverged or dirty checkout
 - **WHEN** a safe fast-forward update cannot proceed
 - **THEN** the script stops without destructive Git operations and reports how the operator can inspect the state
-
-### Requirement: Hermes stdio deployment documentation
-The README SHALL document installation under the Hermes persistent data volume, launching the absolute compiled entry path with `command`, `args`, and explicit `env`, and setting `supports_parallel_tool_calls: false`. The example SHALL use the NAS Actual endpoint without assuming that `localhost` reaches another container and SHALL contain placeholders rather than real credentials.
-
-#### Scenario: Hermes configuration example
-- **WHEN** an operator follows the documented example
-- **THEN** Hermes launches the MCP as a local stdio child process and passes only the required Actual environment values
-
-#### Scenario: Container-local localhost warning
-- **WHEN** the Actual Server runs in a separate container
-- **THEN** the documentation instructs the operator to use the NAS address or a shared Docker-network hostname instead of Hermes-container `localhost`
-
-### Requirement: Optional Docker image
-The repository SHALL include a Dockerfile that can build and run the MCP over stdio without making Docker mandatory. The runtime image SHALL support interactive stdin, use an unprivileged user where practical, and allow the Actual cache to be mounted separately from the Actual Server data.
-
-#### Scenario: Containerized stdio run
-- **WHEN** the image is built and started with interactive stdin, required environment variables, network reachability, and a cache volume
-- **THEN** an MCP client can communicate with the process over stdio
 
 ### Requirement: Repository documentation and secret hygiene
 The repository SHALL keep `.env.example`, `.gitignore`, `README.md`, and `CHANGELOG.md`. README SHALL document `Payees`, `Rules`, and `Automatic categorization foundation` sections; every new tool's purpose, input, output, example, and destructive warning where applicable; the `default` stage translation; conservative authoring limits; and unsupported manual rule run and preview. CHANGELOG SHALL contain a `0.3.0` entry with `Added`, `Changed`, and `Fixed`. All project-authored documentation, code comments, script messages, test descriptions, examples, and configuration guidance SHALL be written in English. Examples MUST NOT contain real credentials.
@@ -146,3 +107,8 @@ The v0.3.0 release SHALL be declared ready only after typecheck, unit, contract,
 #### Scenario: Required real test is unavailable
 - **WHEN** a required integration or E2E suite for a supported capability cannot be executed against the real configured server
 - **THEN** the report identifies the blocker and ends with exactly `ACTUAL BUDGET MCP v0.3.0 NOT READY`
+
+## RENAMED Requirements
+
+- FROM: `### Requirement: Strict v0.2.0 readiness gate`
+- TO: `### Requirement: Strict v0.3.0 readiness gate`

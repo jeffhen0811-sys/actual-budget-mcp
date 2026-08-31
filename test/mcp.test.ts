@@ -2,6 +2,7 @@ import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLogger } from '../src/logger.js';
 import { createMcpServer, TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
+import { PublicError } from '../src/errors.js';
 
 function fakeRuntime(): ToolRuntime {
   return {
@@ -28,7 +29,17 @@ function fakeRuntime(): ToolRuntime {
     moveCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g2', isIncome: false, hidden: false } }),
     hideCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: true } }),
     unhideCategory: vi.fn().mockResolvedValue({ success: true, changed: true, category: { id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: false } }),
-    deleteCategory: vi.fn().mockResolvedValue({ success: true, deletedCategoryId: 'c2', deletedCategoryName: 'Flights', relatedTransactionCount: 0, relatedBudgetMonthCount: 0, relatedCarryoverMonthCount: 0 })
+    deleteCategory: vi.fn().mockResolvedValue({ success: true, deletedCategoryId: 'c2', deletedCategoryName: 'Flights', relatedTransactionCount: 0, relatedBudgetMonthCount: 0, relatedCarryoverMonthCount: 0 }),
+    getPayee: vi.fn().mockResolvedValue({ id: 'p1', name: 'Bakery' }),
+    createPayee: vi.fn().mockResolvedValue({ success: true, changed: true, payee: { id: 'p2', name: 'Cafe' } }),
+    updatePayee: vi.fn().mockResolvedValue({ success: true, changed: true, payee: { id: 'p1', name: 'Bakery' } }),
+    deletePayee: vi.fn().mockResolvedValue({ success: true, deletedPayeeId: 'p2', deletedPayeeName: 'Cafe', relatedTransactionCount: 0, relatedRuleCount: 0 }),
+    mergePayees: vi.fn().mockResolvedValue({ success: true, targetPayee: { id: 'p1', name: 'Bakery' }, mergedSourcePayeeIds: ['p2'], impacts: [{ payeeId: 'p2', payeeName: 'Cafe', relatedTransactionCount: 0, relatedRuleCount: 0 }] }),
+    listRules: vi.fn().mockResolvedValue([{ id: 'r1', stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'bakery' }], actions: [{ op: 'set', field: 'payee', value: 'p1' }], writable: true }]),
+    getRule: vi.fn().mockResolvedValue({ id: 'r1', stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'bakery' }], actions: [{ op: 'set', field: 'payee', value: 'p1' }], writable: true }),
+    createRule: vi.fn().mockResolvedValue({ success: true, changed: true, rule: { id: 'r2', stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'cafe' }], actions: [{ op: 'set', field: 'payee', value: 'p2' }], writable: true } }),
+    updateRule: vi.fn().mockResolvedValue({ success: true, changed: true, rule: { id: 'r1', stage: 'post', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'bakery' }], actions: [{ op: 'set', field: 'payee', value: 'p1' }], writable: true } }),
+    deleteRule: vi.fn().mockResolvedValue({ success: true, deletedRuleId: 'r2' })
   };
 }
 
@@ -50,10 +61,10 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly twenty-four tools with accurate annotations and English metadata', async () => {
+  it('registers exactly thirty-four tools with accurate annotations and English metadata', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(24);
+    expect(tools).toHaveLength(34);
     for (const tool of tools) {
       expect(tool.title).toMatch(/^[\x20-\x7E]+$/);
       expect(tool.description).toMatch(/^[\x20-\x7E]+$/);
@@ -70,6 +81,12 @@ describe('MCP server contract', () => {
       expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
       expect(tools.find(tool => tool.name === name)?.description).toContain('DESTRUCTIVE OPERATION');
     }
+    expect(tools.find(tool => tool.name === 'actual_create_payee')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: true });
+    expect(tools.find(tool => tool.name === 'actual_create_rule')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: false });
+    for (const name of ['actual_delete_payee', 'actual_merge_payees', 'actual_delete_rule']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
+    }
+    expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
     expect(tools.some(tool => /reorder|account_group|actualql|generic_crud/i.test(tool.name))).toBe(false);
   });
 
@@ -105,7 +122,17 @@ describe('MCP server contract', () => {
       { name: 'actual_move_category', arguments: { categoryId: 'c1', targetGroupId: 'g2' } },
       { name: 'actual_hide_category', arguments: { categoryId: 'c1' } },
       { name: 'actual_unhide_category', arguments: { categoryId: 'c1' } },
-      { name: 'actual_delete_category', arguments: { categoryId: 'c2', confirmDestructive: true } }
+      { name: 'actual_delete_category', arguments: { categoryId: 'c2', confirmDestructive: true } },
+      { name: 'actual_get_payee', arguments: { payeeId: 'p1' } },
+      { name: 'actual_create_payee', arguments: { name: 'Cafe' } },
+      { name: 'actual_update_payee', arguments: { payeeId: 'p1', name: 'Bakery' } },
+      { name: 'actual_delete_payee', arguments: { payeeId: 'p2', confirmDestructive: true } },
+      { name: 'actual_merge_payees', arguments: { sourcePayeeIds: ['p2'], targetPayeeId: 'p1', confirmDestructive: true } },
+      { name: 'actual_list_rules', arguments: {} },
+      { name: 'actual_get_rule', arguments: { ruleId: 'r1' } },
+      { name: 'actual_create_rule', arguments: { stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'cafe' }], actions: [{ op: 'set', field: 'payee', value: 'p2' }] } },
+      { name: 'actual_update_rule', arguments: { ruleId: 'r1', stage: 'post' } },
+      { name: 'actual_delete_rule', arguments: { ruleId: 'r2', confirmDestructive: true } }
     ];
     for (const call of calls) {
       const result = await client.callTool(call);
@@ -126,11 +153,23 @@ describe('MCP server contract', () => {
     ]);
   });
 
+  it('preserves the v0.2.0 payee-list item shape exactly', async () => {
+    const result = await client.callTool({ name: 'actual_list_payees', arguments: {} });
+    expect(result.structuredContent).toEqual({ payees: [{ id: 'p1', name: 'Padaria São João' }] });
+    expect(Object.keys((result.structuredContent as { payees: Array<Record<string, unknown>> }).payees[0]!)).toEqual(['id', 'name']);
+  });
+
   it('rejects every structural delete without literal confirmation before runtime execution', async () => {
+    vi.mocked(runtime.deletePayee).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_delete_payee', false));
+    vi.mocked(runtime.mergePayees).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_merge_payees', false));
+    vi.mocked(runtime.deleteRule).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_delete_rule', false));
     const calls = [
       ['actual_delete_account', { accountId: 'a2' }],
       ['actual_delete_category_group', { groupId: 'g2' }],
-      ['actual_delete_category', { categoryId: 'c2' }]
+      ['actual_delete_category', { categoryId: 'c2' }],
+      ['actual_delete_payee', { payeeId: 'p2' }],
+      ['actual_merge_payees', { sourcePayeeIds: ['p2'], targetPayeeId: 'p1' }],
+      ['actual_delete_rule', { ruleId: 'r2' }]
     ] as const;
     for (const [name, args] of calls) {
       const result = await client.callTool({ name, arguments: args });
@@ -140,6 +179,35 @@ describe('MCP server contract', () => {
     expect(runtime.deleteAccount).not.toHaveBeenCalled();
     expect(runtime.deleteCategoryGroup).not.toHaveBeenCalled();
     expect(runtime.deleteCategory).not.toHaveBeenCalled();
+    expect(runtime.deletePayee).toHaveBeenCalledWith('p2', false);
+    expect(runtime.mergePayees).toHaveBeenCalledWith(['p2'], 'p1', false);
+    expect(runtime.deleteRule).toHaveBeenCalledWith('r2', false);
+
+    for (const [name, args] of [
+      ['actual_delete_payee', { payeeId: 'p2', confirmDestructive: false }],
+      ['actual_merge_payees', { sourcePayeeIds: ['p2'], targetPayeeId: 'p1', confirmDestructive: false }],
+      ['actual_delete_rule', { ruleId: 'r2', confirmDestructive: false }]
+    ] as const) {
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError, name).toBe(true);
+      expect(result.structuredContent, name).toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
+    }
+  });
+
+  it('rejects malformed rule calls and unavailable run or preview tools, then continues operating', async () => {
+    const malformed = await client.callTool({ name: 'actual_create_rule', arguments: {
+      stage: 'default', conditionsOp: 'and',
+      conditions: [{ field: 'amount', op: 'contains', value: 100 }],
+      actions: [{ op: 'delete-transaction', value: '' }]
+    } });
+    const emptyUpdate = await client.callTool({ name: 'actual_update_rule', arguments: { ruleId: 'r1' } });
+    expect([malformed, emptyUpdate].every(result => result.isError === true)).toBe(true);
+    await expect(client.callTool({ name: 'actual_run_rules', arguments: {} })).rejects.toThrow('not found');
+    await expect(client.callTool({ name: 'actual_preview_rule', arguments: {} })).rejects.toThrow('not found');
+    expect(runtime.createRule).not.toHaveBeenCalled();
+    expect(runtime.updateRule).not.toHaveBeenCalled();
+    const healthy = await client.callTool({ name: 'actual_list_rules', arguments: {} });
+    expect(healthy.isError).not.toBe(true);
   });
 
   it('rejects invalid dates, unknown fields, fractional amounts, oversized batches, and unconfirmed deletion before runtime calls', async () => {

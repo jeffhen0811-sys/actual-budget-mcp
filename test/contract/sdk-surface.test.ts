@@ -6,14 +6,25 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     const manifest = JSON.parse(await readFile('node_modules/@actual-app/api/package.json', 'utf8')) as { version: string };
     const declarations = await readFile('node_modules/@actual-app/api/@types/methods.d.ts', 'utf8');
     const models = await readFile('node_modules/@actual-app/core/@types/src/server/api-models.d.ts', 'utf8');
+    const ruleModels = await readFile('node_modules/@actual-app/core/@types/src/types/models/rule.d.ts', 'utf8');
     expect(manifest.version).toBe('26.8.1');
     for (const method of [
       'getBudgetMonths', 'getBudgetMonth', 'getTransactions', 'getAccounts', 'createAccount', 'updateAccount',
       'closeAccount', 'reopenAccount', 'deleteAccount', 'getAccountBalance', 'getCategoryGroups',
       'createCategoryGroup', 'updateCategoryGroup', 'deleteCategoryGroup', 'getCategories', 'createCategory',
-      'updateCategory', 'deleteCategory'
+      'updateCategory', 'deleteCategory', 'getPayees', 'createPayee', 'updatePayee', 'deletePayee',
+      'mergePayees', 'getPayeeRules', 'getRules', 'createRule', 'updateRule', 'deleteRule'
     ]) expect(declarations).toContain(`function ${method}(`);
     expect(models).toContain('balance_current?: number | null');
+    expect(models).toContain("Pick<PayeeEntity, 'id' | 'name' | 'transfer_acct'>");
+    expect(declarations).toContain("updateRule(rule: RuleEntity)");
+    expect(declarations).toContain("deleteRule(id: RuleEntity['id']): Promise<boolean>");
+    expect(ruleModels).toContain("stage: 'pre' | null | 'post'");
+    expect(ruleModels).toContain('conditions: RuleConditionEntity[]');
+    expect(ruleModels).toContain('actions: RuleActionEntity[]');
+    expect(ruleModels).toContain('options?:');
+    expect(ruleModels).toContain('tombstone?: boolean');
+    expect(declarations).not.toMatch(/function (?:runRules|previewRule)\(/);
   });
 
   it('retains the public unbounded history behavior and known cascade guards', async () => {
@@ -25,5 +36,27 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     expect(implementation).toContain('name: group.name,\n\t\thidden: group.hidden');
     expect(implementation).toContain('name: category.name.trim()');
     expect(implementation).toContain('group.name.toUpperCase()');
+  });
+
+  it('pins payee merge and rule safety behavior without importing bundle internals in production', async () => {
+    const implementation = await readFile('node_modules/@actual-app/api/dist/index.js', 'utf8');
+    expect(implementation).toContain('if (transfer_acct) return;');
+    expect(implementation).toContain('if (payees[target].transfer_acct != null) return;');
+    expect(implementation).toContain('ids = ids.filter((id) => payees[id].transfer_acct == null);');
+    expect(implementation).toContain('SELECT id FROM payee_mapping WHERE targetId = ?');
+    expect(implementation).toContain('targetId: target');
+    expect(implementation).toContain('if (rule.stage !== "pre" && rule.stage !== "post" && rule.stage !== null)');
+    expect(implementation).toContain('return pre.concat(normal).concat(post);');
+    expect(implementation).toContain('SELECT id FROM schedules WHERE rule = ?');
+    expect(implementation).toContain('return handlers$1["rule-delete"](id);');
+  });
+
+  it('does not publicly export bundled single-rule, run, or preview handlers', async () => {
+    const implementation = await readFile('node_modules/@actual-app/api/dist/index.js', 'utf8');
+    const exportBlock = implementation.slice(implementation.lastIndexOf('//#region index.ts'));
+    expect(implementation).toContain('app$5.method("rule-get", getRule);');
+    expect(implementation).toContain('app$5.method("rules-run", runRules);');
+    expect(exportBlock).not.toMatch(/exports\.(?:runRules|previewRule|getRule)\s*=/);
+    expect(exportBlock).not.toMatch(/exports\.[A-Za-z]*[Pp]review[A-Za-z]*\s*=/);
   });
 });

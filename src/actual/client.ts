@@ -13,10 +13,23 @@ import type {
   AdapterBudgetMonth,
   AdapterCategory,
   AdapterCategoryGroup,
+  AdapterPayee,
+  AdapterRule,
   AdapterTransaction,
   ImportTransaction
 } from './adapter.js';
 import { FifoQueue } from './queue.js';
+import {
+  isWritableRuleAction,
+  isWritableRuleCondition,
+  projectRule,
+  toSdkRule,
+  type PublicRule,
+  type PublicRuleAction,
+  type PublicRuleCondition,
+  type PublicRuleStage,
+  type WritableRuleDraft
+} from './rules.js';
 
 export interface PublicAccount {
   id: string;
@@ -42,10 +55,24 @@ export interface PublicCategory {
   hidden: boolean;
 }
 
+export interface PublicPayee {
+  id: string;
+  name: string;
+  transferAccountId?: string | null;
+}
+
 export interface MutationResult<T> { success: true; changed: boolean; }
 export type AccountMutationResult = MutationResult<PublicAccount> & { account: PublicAccount };
 export type CategoryGroupMutationResult = MutationResult<PublicCategoryGroup> & { categoryGroup: PublicCategoryGroup };
 export type CategoryMutationResult = MutationResult<PublicCategory> & { category: PublicCategory };
+export type PayeeMutationResult = MutationResult<PublicPayee> & { payee: PublicPayee };
+export type RuleMutationResult = MutationResult<PublicRule> & { rule: PublicRule };
+export interface PayeeMergeImpact {
+  payeeId: string;
+  payeeName: string;
+  relatedTransactionCount: number;
+  relatedRuleCount: number;
+}
 
 export interface RuntimeHealth {
   connected: boolean;
@@ -390,7 +417,7 @@ export class ActualClient {
     return normalized;
   }
 
-  private mutationError(operation: string, error: unknown, entity: { type: 'account' | 'categoryGroup' | 'category'; id?: string; name?: string }): never {
+  private mutationError(operation: string, error: unknown, entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule'; id?: string; name?: string }): never {
     if (error instanceof PublicError) throw error;
     const lower = errorMessage(error).toLowerCase();
     if (lower.includes('already exists') || lower.includes('unique constraint') || lower.includes('duplicate')) {
@@ -401,7 +428,7 @@ export class ActualClient {
 
   private async synchronizeAndVerify<T>(
     operation: string,
-    entity: { type: 'account' | 'categoryGroup' | 'category'; id?: string; name?: string },
+    entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule'; id?: string; name?: string },
     verify: () => Promise<T>
   ): Promise<T> {
     try {
@@ -454,6 +481,7 @@ export class ActualClient {
       if (!transaction || typeof transaction !== 'object' || typeof transaction.id !== 'string' ||
           typeof transaction.account !== 'string' || typeof transaction.date !== 'string' ||
           typeof transaction.amount !== 'number' || !Number.isSafeInteger(transaction.amount) ||
+          (transaction.payee !== undefined && transaction.payee !== null && typeof transaction.payee !== 'string') ||
           (transaction.category !== undefined && transaction.category !== null && typeof transaction.category !== 'string')) {
         throw new Error('Transaction history contained a malformed record.');
       }
@@ -801,6 +829,442 @@ export class ActualClient {
         relatedBudgetMonthCount: 0 as const,
         relatedCarryoverMonthCount: 0 as const
       };
+    });
+  }
+
+  private completePayees(operation: string): Promise<AdapterPayee[]> {
+    return this.api.getPayees().then(payees => {
+      if (!Array.isArray(payees) || payees.some(payee => !payee || typeof payee.id !== 'string' || !payee.id ||
+          typeof payee.name !== 'string' || (payee.transfer_acct !== undefined && payee.transfer_acct !== null && typeof payee.transfer_acct !== 'string'))) {
+        throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Actual returned an incomplete payee list.', operation, false);
+      }
+      return payees;
+    }).catch(error => {
+      if (error instanceof PublicError) throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The complete payee list could not be verified.', operation, false, undefined, { cause: error });
+    });
+  }
+
+  private normalizePayee(payee: AdapterPayee): PublicPayee {
+    return {
+      id: payee.id,
+      name: payee.name,
+      ...(payee.transfer_acct === undefined ? {} : { transferAccountId: payee.transfer_acct })
+    };
+  }
+
+  private requirePayee(payees: readonly AdapterPayee[], payeeId: string, operation: string): AdapterPayee {
+    const payee = payees.find(item => item.id === payeeId);
+    if (!payee) throw new PublicError('NOT_FOUND', 'The requested payee was not found.', operation, false, {
+      entity: { type: 'payee', id: payeeId }
+    });
+    return payee;
+  }
+
+  private ensureOrdinaryPayee(payee: AdapterPayee, operation: string): void {
+    if (payee.transfer_acct !== undefined && payee.transfer_acct !== null) {
+      throw new PublicError('TRANSFER_PAYEE_PROTECTED', 'Transfer payees cannot be changed by payee administration tools.', operation, false, {
+        entity: { type: 'payee', id: payee.id, name: payee.name },
+        details: { transferAccountId: payee.transfer_acct }
+      });
+    }
+  }
+
+  private countPayeeTransactions(transactions: readonly AdapterTransaction[], payeeId: string): number {
+    let count = 0;
+    for (const transaction of transactions) {
+      if (transaction.payee === payeeId) count += 1;
+      if (transaction.subtransactions) count += this.countPayeeTransactions(transaction.subtransactions, payeeId);
+    }
+    return count;
+  }
+
+  private collectPayeeTransactionIds(transactions: readonly AdapterTransaction[], payeeId: string, output = new Set<string>()): Set<string> {
+    for (const transaction of transactions) {
+      if (transaction.payee === payeeId) output.add(transaction.id);
+      if (transaction.subtransactions) this.collectPayeeTransactionIds(transaction.subtransactions, payeeId, output);
+    }
+    return output;
+  }
+
+  private collectTransactionsById(transactions: readonly AdapterTransaction[], output = new Map<string, AdapterTransaction>()): Map<string, AdapterTransaction> {
+    for (const transaction of transactions) {
+      output.set(transaction.id, transaction);
+      if (transaction.subtransactions) this.collectTransactionsById(transaction.subtransactions, output);
+    }
+    return output;
+  }
+
+  private async completePayeeReferences(payee: AdapterPayee, operation: string): Promise<{
+    transactionCount: number;
+    ruleIds: string[];
+    transactionIds: Set<string>;
+  }> {
+    try {
+      const accounts = await this.api.getAccounts();
+      if (!Array.isArray(accounts) || accounts.some(account => !account || typeof account.id !== 'string' || typeof account.name !== 'string')) {
+        throw new Error('Account list was incomplete.');
+      }
+      let transactionCount = 0;
+      const transactionIds = new Set<string>();
+      for (const account of accounts) {
+        const transactions = await this.completeAccountHistory(account, operation);
+        transactionCount += this.countPayeeTransactions(transactions, payee.id);
+        this.collectPayeeTransactionIds(transactions, payee.id, transactionIds);
+      }
+      const rules = await this.api.getPayeeRules(payee.id);
+      if (!Array.isArray(rules) || rules.some(rule => !rule || typeof rule.id !== 'string')) throw new Error('Payee rules were incomplete.');
+      return { transactionCount, ruleIds: [...new Set(rules.map(rule => rule.id))], transactionIds };
+    } catch (error) {
+      if (error instanceof PublicError && error.code === 'PREFLIGHT_INCONCLUSIVE') throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Complete payee relationships could not be verified.', operation, false, {
+        entity: { type: 'payee', id: payee.id, name: payee.name }
+      }, { cause: error });
+    }
+  }
+
+  getPayee(payeeId: string): Promise<PublicPayee> {
+    const operation = 'actual_get_payee';
+    return this.run(operation, async () => this.normalizePayee(this.requirePayee(await this.completePayees(operation), payeeId, operation)));
+  }
+
+  createPayee(name: string): Promise<PayeeMutationResult> {
+    const operation = 'actual_create_payee';
+    return this.run(operation, async () => {
+      name = name.trim();
+      if (!name) throw new PublicError('CONFIGURATION_ERROR', 'Payee name must not be empty.', operation, false);
+      const payees = await this.completePayees(operation);
+      const matches = payees.filter(payee => payee.name.trim() === name);
+      if (matches.length === 1 && (matches[0]!.transfer_acct === undefined || matches[0]!.transfer_acct === null)) {
+        return { success: true, changed: false, payee: this.normalizePayee(matches[0]!) };
+      }
+      if (matches.length > 0) throw new PublicError('NAME_CONFLICT', 'The requested payee name is ambiguous or belongs to a protected transfer payee.', operation, false, {
+        details: { exactMatchCount: matches.length }
+      });
+      let id: string;
+      try { id = await this.api.createPayee({ name }); }
+      catch (error) { this.mutationError(operation, error, { type: 'payee', name }); }
+      if (!id || typeof id !== 'string') throw new PublicError('MUTATION_FAILED', 'Actual did not return the created payee ID.', operation, false);
+      const payee = await this.synchronizeAndVerify(operation, { type: 'payee', id, name }, async () => {
+        const persisted = this.requirePayee(await this.completePayees(operation), id, operation);
+        this.ensureOrdinaryPayee(persisted, operation);
+        if (persisted.name !== name) throw new Error('Payee name did not persist.');
+        return this.normalizePayee(persisted);
+      });
+      return { success: true, changed: true, payee };
+    });
+  }
+
+  updatePayee(payeeId: string, name: string): Promise<PayeeMutationResult> {
+    const operation = 'actual_update_payee';
+    return this.run(operation, async () => {
+      name = name.trim();
+      if (!name) throw new PublicError('CONFIGURATION_ERROR', 'Payee name must not be empty.', operation, false);
+      const current = this.requirePayee(await this.completePayees(operation), payeeId, operation);
+      this.ensureOrdinaryPayee(current, operation);
+      if (current.name === name) return { success: true, changed: false, payee: this.normalizePayee(current) };
+      try { await this.api.updatePayee(payeeId, { name }); }
+      catch (error) { this.mutationError(operation, error, { type: 'payee', id: current.id, name: current.name }); }
+      const payee = await this.synchronizeAndVerify(operation, { type: 'payee', id: current.id, name: current.name }, async () => {
+        const persisted = this.requirePayee(await this.completePayees(operation), payeeId, operation);
+        this.ensureOrdinaryPayee(persisted, operation);
+        if (persisted.name !== name) throw new Error('Payee rename did not persist.');
+        return this.normalizePayee(persisted);
+      });
+      return { success: true, changed: true, payee };
+    });
+  }
+
+  deletePayee(payeeId: string, confirmDestructive: boolean) {
+    const operation = 'actual_delete_payee';
+    return this.run(operation, async () => {
+      const current = this.requirePayee(await this.completePayees(operation), payeeId, operation);
+      this.ensureOrdinaryPayee(current, operation);
+      const references = await this.completePayeeReferences(current, operation);
+      const details = { relatedTransactionCount: references.transactionCount, relatedRuleCount: references.ruleIds.length };
+      if (!confirmDestructive) throw new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after reviewing this payee deletion preflight.',
+        operation,
+        false,
+        { entity: { type: 'payee', id: current.id, name: current.name }, details }
+      );
+      if (references.transactionCount > 0 || references.ruleIds.length > 0) throw new PublicError(
+        'PAYEE_IN_USE',
+        'Only a proven-unused payee can be deleted.',
+        operation,
+        false,
+        { entity: { type: 'payee', id: current.id, name: current.name }, details }
+      );
+      try { await this.api.deletePayee(payeeId); }
+      catch (error) { this.mutationError(operation, error, { type: 'payee', id: current.id, name: current.name }); }
+      await this.synchronizeAndVerify(operation, { type: 'payee', id: current.id, name: current.name }, async () => {
+        if ((await this.completePayees(operation)).some(payee => payee.id === payeeId)) throw new Error('Payee remained present.');
+      });
+      return {
+        success: true as const,
+        deletedPayeeId: current.id,
+        deletedPayeeName: current.name,
+        relatedTransactionCount: 0 as const,
+        relatedRuleCount: 0 as const
+      };
+    });
+  }
+
+  mergePayees(sourcePayeeIds: string[], targetPayeeId: string, confirmDestructive: boolean) {
+    const operation = 'actual_merge_payees';
+    return this.run(operation, async () => {
+      if (sourcePayeeIds.length === 0 || new Set(sourcePayeeIds).size !== sourcePayeeIds.length || sourcePayeeIds.includes(targetPayeeId)) {
+        throw new PublicError('CONFIGURATION_ERROR', 'Payee merge requires unique non-empty sources distinct from the target.', operation, false);
+      }
+      const payees = await this.completePayees(operation);
+      const target = this.requirePayee(payees, targetPayeeId, operation);
+      this.ensureOrdinaryPayee(target, operation);
+      const sources = sourcePayeeIds.map(id => this.requirePayee(payees, id, operation));
+      sources.forEach(source => this.ensureOrdinaryPayee(source, operation));
+      const preflight = await Promise.all(sources.map(async source => ({ source, references: await this.completePayeeReferences(source, operation) })));
+      const impacts: PayeeMergeImpact[] = preflight.map(({ source, references }) => ({
+        payeeId: source.id,
+        payeeName: source.name,
+        relatedTransactionCount: references.transactionCount,
+        relatedRuleCount: references.ruleIds.length
+      }));
+      if (!confirmDestructive) throw new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after reviewing this payee merge preflight.',
+        operation,
+        false,
+        { entity: { type: 'payee', id: target.id, name: target.name }, details: { impacts } }
+      );
+      const impactedTransactionIds = new Set(preflight.flatMap(item => [...item.references.transactionIds]));
+      const impactedRuleIds = new Set(preflight.flatMap(item => item.references.ruleIds));
+      const partialFailure = (message: string, error?: unknown): PublicError => new PublicError(
+        'MERGE_PARTIAL_STATE',
+        message,
+        operation,
+        false,
+        {
+          recoveryAction: 'actual_sync',
+          entity: { type: 'payee', id: target.id, name: target.name },
+          state: 'local_change_may_have_succeeded',
+          partialState: true,
+          details: { sourcePayeeIds, targetPayeeId }
+        },
+        error === undefined ? undefined : { cause: error }
+      );
+      try { await this.api.mergePayees(targetPayeeId, sourcePayeeIds); }
+      catch (error) { throw partialFailure('The payee merge may have partially changed local state. Synchronize and inspect all named payees before another merge.', error); }
+      try { await this.api.sync(); }
+      catch (error) { throw partialFailure('The payee merge may have succeeded locally but synchronization failed. Run actual_sync and inspect all named payees.', error); }
+      try {
+        const persistedPayees = await this.completePayees(operation);
+        const persistedTarget = this.requirePayee(persistedPayees, targetPayeeId, operation);
+        this.ensureOrdinaryPayee(persistedTarget, operation);
+        if (sourcePayeeIds.some(id => persistedPayees.some(payee => payee.id === id))) throw new Error('A source payee remained present.');
+        const accounts = await this.api.getAccounts();
+        if (!Array.isArray(accounts)) throw new Error('Account list was incomplete.');
+        const byId = new Map<string, AdapterTransaction>();
+        for (const account of accounts) this.collectTransactionsById(await this.completeAccountHistory(account, operation), byId);
+        for (const transactionId of impactedTransactionIds) {
+          if (byId.get(transactionId)?.payee !== targetPayeeId) throw new Error('An impacted transaction did not resolve to the target payee.');
+        }
+        const targetRules = await this.api.getPayeeRules(targetPayeeId);
+        const targetRuleIds = new Set(targetRules.map(rule => rule.id));
+        if ([...impactedRuleIds].some(id => !targetRuleIds.has(id))) throw new Error('An impacted rule did not resolve to the target payee.');
+        return {
+          success: true as const,
+          targetPayee: this.normalizePayee(persistedTarget),
+          mergedSourcePayeeIds: [...sourcePayeeIds],
+          impacts
+        };
+      } catch (error) {
+        throw partialFailure('The payee merge synchronized but its complete result could not be verified. Inspect the target, sources, transactions, and rules.', error);
+      }
+    });
+  }
+
+  private normalizeRule(rule: AdapterRule, operation: string): PublicRule {
+    try { return projectRule(rule); }
+    catch (error) {
+      throw new PublicError('UNSUPPORTED_RULE_SHAPE', 'Actual returned a rule outside the pinned readable contract.', operation, false, {
+        entity: { type: 'rule', id: rule?.id }
+      }, { cause: error });
+    }
+  }
+
+  private async completeRules(operation: string): Promise<AdapterRule[]> {
+    try {
+      const rules = await this.api.getRules();
+      if (!Array.isArray(rules)) throw new Error('Rule list was not an array.');
+      rules.forEach(rule => this.normalizeRule(rule, operation));
+      return rules;
+    } catch (error) {
+      if (error instanceof PublicError) throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The complete Actual rule list could not be verified.', operation, false, undefined, { cause: error });
+    }
+  }
+
+  private requireRule(rules: readonly AdapterRule[], ruleId: string, operation: string): AdapterRule {
+    const rule = rules.find(item => item.id === ruleId);
+    if (!rule) throw new PublicError('NOT_FOUND', 'The requested rule was not found.', operation, false, {
+      entity: { type: 'rule', id: ruleId }
+    });
+    return rule;
+  }
+
+  listRules(): Promise<PublicRule[]> {
+    const operation = 'actual_list_rules';
+    return this.run(operation, async () => (await this.completeRules(operation)).map(rule => this.normalizeRule(rule, operation)));
+  }
+
+  getRule(ruleId: string): Promise<PublicRule> {
+    const operation = 'actual_get_rule';
+    return this.run(operation, async () => this.normalizeRule(this.requireRule(await this.completeRules(operation), ruleId, operation), operation));
+  }
+
+  private async validateRuleReferences(rule: WritableRuleDraft, operation: string): Promise<void> {
+    try {
+      const [accounts, groups, categories, payees] = await Promise.all([
+        this.api.getAccounts(), this.api.getCategoryGroups(), this.api.getCategories(), this.api.getPayees()
+      ]);
+      if (![accounts, groups, categories, payees].every(Array.isArray) ||
+          accounts.some(item => !item || typeof item.id !== 'string') ||
+          groups.some(item => !item || typeof item.id !== 'string') ||
+          categories.some(item => !item || typeof item.id !== 'string') ||
+          payees.some(item => !item || typeof item.id !== 'string')) throw new Error('A reference list was incomplete.');
+      const sets = {
+        account: new Set(accounts.map(item => item.id)),
+        category_group: new Set(groups.map(item => item.id)),
+        category: new Set(categories.map(item => item.id)),
+        payee: new Set(payees.map(item => item.id))
+      };
+      const check = (type: keyof typeof sets, value: unknown) => {
+        const values = Array.isArray(value) ? value : [value];
+        for (const id of values) if (typeof id !== 'string' || !sets[type].has(id)) throw new PublicError(
+          'INVALID_REFERENCE',
+          `The rule references a ${type.replace('_', ' ')} that does not exist.`,
+          operation,
+          false,
+          { details: { referenceType: type, referenceId: typeof id === 'string' ? id : '[invalid]' } }
+        );
+      };
+      for (const condition of rule.conditions) if (condition.field in sets) check(condition.field as keyof typeof sets, condition.value);
+      for (const action of rule.actions) if (action.op === 'set' && action.field && action.field in sets) check(action.field as keyof typeof sets, action.value);
+    } catch (error) {
+      if (error instanceof PublicError) throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Complete rule references could not be verified.', operation, false, undefined, { cause: error });
+    }
+  }
+
+  private requireWritableRuleDraft(rule: WritableRuleDraft, operation: string): void {
+    if (rule.conditions.length === 0 || rule.actions.length === 0 ||
+        !rule.conditions.every(isWritableRuleCondition) || !rule.actions.every(isWritableRuleAction)) {
+      throw new PublicError('UNSUPPORTED_RULE_SHAPE', 'The requested rule is outside the MCP authoring subset.', operation, false);
+    }
+  }
+
+  private comparableRuleDraft(rule: WritableRuleDraft): string {
+    return JSON.stringify({
+      stage: rule.stage,
+      conditionsOp: rule.conditionsOp,
+      conditions: rule.conditions.map(condition => ({
+        field: condition.field,
+        op: condition.op,
+        value: condition.value,
+        ...(condition.options && Object.keys(condition.options).length > 0 ? { options: condition.options } : {})
+      })),
+      actions: rule.actions.map(action => ({
+        op: action.op,
+        ...(action.op === 'set' && action.field !== undefined ? { field: action.field } : {}),
+        value: action.value,
+        ...(action.options && Object.keys(action.options).length > 0 ? { options: action.options } : {})
+      }))
+    });
+  }
+
+  createRule(rule: WritableRuleDraft): Promise<RuleMutationResult> {
+    const operation = 'actual_create_rule';
+    return this.run(operation, async () => {
+      this.requireWritableRuleDraft(rule, operation);
+      await this.validateRuleReferences(rule, operation);
+      let created: AdapterRule;
+      try { created = await this.api.createRule(toSdkRule(rule)); }
+      catch (error) { this.mutationError(operation, error, { type: 'rule' }); }
+      if (!created || typeof created.id !== 'string' || !created.id) throw new PublicError('MUTATION_FAILED', 'Actual did not return the created rule ID.', operation, false);
+      const persisted = await this.synchronizeAndVerify(operation, { type: 'rule', id: created.id }, async () => {
+        const current = this.requireRule(await this.completeRules(operation), created.id, operation);
+        const projected = this.normalizeRule(current, operation);
+        if (!projected.writable || this.comparableRuleDraft({
+          stage: projected.stage,
+          conditionsOp: projected.conditionsOp,
+          conditions: projected.conditions,
+          actions: projected.actions
+        }) !== this.comparableRuleDraft(rule)) {
+          throw new Error('Created rule did not persist as writable.');
+        }
+        return projected;
+      });
+      return { success: true, changed: true, rule: persisted };
+    });
+  }
+
+  updateRule(
+    ruleId: string,
+    fields: { stage?: PublicRuleStage; conditionsOp?: 'and' | 'or'; conditions?: PublicRuleCondition[]; actions?: PublicRuleAction[] }
+  ): Promise<RuleMutationResult> {
+    const operation = 'actual_update_rule';
+    return this.run(operation, async () => {
+      const currentAdapter = this.requireRule(await this.completeRules(operation), ruleId, operation);
+      const current = this.normalizeRule(currentAdapter, operation);
+      if (!current.writable) throw new PublicError('UNSUPPORTED_RULE_SHAPE', 'Advanced rules are read-only through this MCP version.', operation, false, {
+        entity: { type: 'rule', id: ruleId }
+      });
+      const desired: WritableRuleDraft = {
+        stage: fields.stage ?? current.stage,
+        conditionsOp: fields.conditionsOp ?? current.conditionsOp,
+        conditions: fields.conditions ?? current.conditions,
+        actions: fields.actions ?? current.actions
+      };
+      this.requireWritableRuleDraft(desired, operation);
+      await this.validateRuleReferences(desired, operation);
+      const currentDraft: WritableRuleDraft = {
+        stage: current.stage, conditionsOp: current.conditionsOp, conditions: current.conditions, actions: current.actions
+      };
+      if (this.comparableRuleDraft(currentDraft) === this.comparableRuleDraft(desired)) return { success: true, changed: false, rule: current };
+      try { await this.api.updateRule(toSdkRule(desired, ruleId)); }
+      catch (error) { this.mutationError(operation, error, { type: 'rule', id: ruleId }); }
+      const persisted = await this.synchronizeAndVerify(operation, { type: 'rule', id: ruleId }, async () => {
+        const projected = this.normalizeRule(this.requireRule(await this.completeRules(operation), ruleId, operation), operation);
+        if (!projected.writable || this.comparableRuleDraft({
+          stage: projected.stage, conditionsOp: projected.conditionsOp, conditions: projected.conditions, actions: projected.actions
+        }) !== this.comparableRuleDraft(desired)) throw new Error('Updated rule did not match the desired state.');
+        return projected;
+      });
+      return { success: true, changed: true, rule: persisted };
+    });
+  }
+
+  deleteRule(ruleId: string, confirmDestructive: boolean) {
+    const operation = 'actual_delete_rule';
+    return this.run(operation, async () => {
+      this.requireRule(await this.completeRules(operation), ruleId, operation);
+      if (!confirmDestructive) throw new PublicError(
+        'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+        'Set confirmDestructive to true only after explicitly authorizing this rule deletion.',
+        operation,
+        false,
+        { entity: { type: 'rule', id: ruleId } }
+      );
+      let deleted: boolean;
+      try { deleted = await this.api.deleteRule(ruleId); }
+      catch (error) { this.mutationError(operation, error, { type: 'rule', id: ruleId }); }
+      if (!deleted) throw new PublicError('PROTECTED_ACTUAL_ENTITY', 'Actual protects this rule from direct deletion.', operation, false, {
+        entity: { type: 'rule', id: ruleId }
+      });
+      await this.synchronizeAndVerify(operation, { type: 'rule', id: ruleId }, async () => {
+        if ((await this.completeRules(operation)).some(rule => rule.id === ruleId)) throw new Error('Rule remained present.');
+      });
+      return { success: true as const, deletedRuleId: ruleId };
     });
   }
 

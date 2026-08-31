@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.3.0 - 2026-08-30
+
+### Added
+
+- Five payee tools for exact reads, idempotent create, protected rename, proven-unused deletion, and verified official merge.
+- Five rule tools for ranked reads, conservative creation, desired-state full-object updates, and protected deletion.
+- Strict rule condition/action unions, reference validation, default-stage translation, advanced-rule writability, and import-time functional execution coverage.
+- Exact-ID payee/rule ownership, dependency-ordered cleanup, permanent-payee guards, complete fingerprints, and sanitized leftover diagnostics in real suites.
+
+### Changed
+
+- Expanded the exact compatible MCP surface from 24 to 34 tools while preserving all v0.2.0 contracts, especially `actual_list_payees`.
+- Package, lockfile, MCP metadata, Docker examples, and release documentation now report 0.3.0 while `@actual-app/api` remains pinned at 26.8.1.
+- Real integration and compiled stdio E2E suites cover payee/rule reads, lifecycles, negative paths, restart-safe verification, and automatic categorization through official import.
+
+### Fixed
+
+- Prevented silent transfer-payee delete/merge no-ops from being reported as successful mutations.
+- Interpreted the installed boolean `deleteRule` result and protected schedule-owned rules instead of following the website's nullable return description.
+- Prevented arbitrary rule JSON, destructive actions, missing references, advanced-rule rewrites, merge retries, and unverified partial mutations.
+- Isolated installed SDK discrepancies for payee shape, full-object rule updates, ranked ordering, and `default` stage nullability behind contract-tested adapters.
+
 ## 0.2.0 - 2026-08-30
 
 ### Added

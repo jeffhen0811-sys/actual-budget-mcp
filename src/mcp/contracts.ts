@@ -20,7 +20,7 @@ export const errorOutputSchema = z.object({
     details: z.record(z.string(), z.unknown()).optional().describe('Safe relationship or refusal details.'),
     recoveryAction: z.string().optional().describe('Safe next operation for partial-state recovery.'),
     entity: z.object({
-      type: z.enum(['account', 'categoryGroup', 'category', 'transaction']),
+      type: z.enum(['account', 'categoryGroup', 'category', 'transaction', 'payee', 'rule']),
       id: opaqueIdSchema.optional(),
       name: z.string().optional()
     }).strict().optional(),
@@ -296,3 +296,230 @@ export const categoryDeletionOutputSchema = z.object({
   relatedBudgetMonthCount: z.literal(0),
   relatedCarryoverMonthCount: z.literal(0)
 }).strict().describe('Immutable summary of a confirmed unused-category deletion.');
+
+export const administeredPayeeSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  transferAccountId: opaqueIdSchema.nullable().optional()
+}).strict().describe('One Actual payee with transfer context preserved when supplied by the official API.');
+
+export const payeeIdInputSchema = z.object({
+  payeeId: opaqueIdSchema
+}).strict().describe('Opaque identifier of the requested payee.');
+
+export const payeeOutputSchema = z.object({ payee: administeredPayeeSchema }).strict()
+  .describe('The requested Actual payee.');
+
+export const createPayeeInputSchema = z.object({ name: entityNameSchema }).strict()
+  .describe('Name for an ordinary Actual payee; no transfer or category metadata is accepted.');
+
+export const updatePayeeInputSchema = z.object({ payeeId: opaqueIdSchema, name: entityNameSchema }).strict()
+  .describe('Ordinary payee to rename and its desired trimmed name.');
+
+export const deletePayeeInputSchema = z.object({
+  payeeId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().describe('DESTRUCTIVE OPERATION input for deleting one proven-unused ordinary payee.');
+
+export const payeeMutationOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  payee: administeredPayeeSchema
+}).strict().describe('Persisted payee state after a create or rename operation.');
+
+export const payeeDeletionOutputSchema = z.object({
+  success: z.literal(true),
+  deletedPayeeId: opaqueIdSchema,
+  deletedPayeeName: z.string(),
+  relatedTransactionCount: z.literal(0),
+  relatedRuleCount: z.literal(0)
+}).strict().describe('Immutable summary of a confirmed unused-payee deletion.');
+
+export const payeeMergeImpactSchema = z.object({
+  payeeId: opaqueIdSchema,
+  payeeName: z.string(),
+  relatedTransactionCount: z.number().int().nonnegative(),
+  relatedRuleCount: z.number().int().nonnegative()
+}).strict();
+
+export const mergePayeesInputSchema = z.object({
+  sourcePayeeIds: z.array(opaqueIdSchema).min(1, 'At least one source payee is required.')
+    .refine(ids => new Set(ids).size === ids.length, 'Source payee identifiers must be unique.'),
+  targetPayeeId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().refine(value => !value.sourcePayeeIds.includes(value.targetPayeeId), {
+  path: ['targetPayeeId'],
+  message: 'The target payee must be distinct from every source payee.'
+}).describe('DESTRUCTIVE OPERATION input for merging ordinary source payees into one distinct ordinary target.');
+
+export const payeeMergeOutputSchema = z.object({
+  success: z.literal(true),
+  targetPayee: administeredPayeeSchema,
+  mergedSourcePayeeIds: z.array(opaqueIdSchema).min(1),
+  impacts: z.array(payeeMergeImpactSchema).min(1)
+}).strict().describe('Verified result of one official payee merge.');
+
+const ruleStageSchema = z.enum(['pre', 'default', 'post']);
+const ruleConditionsOpSchema = z.enum(['and', 'or']);
+const idScalarOps = z.enum(['is', 'isNot', 'contains', 'doesNotContain', 'matches']);
+const idListOps = z.enum(['oneOf', 'notOneOf']);
+const textScalarOps = z.enum(['is', 'isNot', 'contains', 'doesNotContain', 'matches']);
+
+function idCondition(field: 'account' | 'category' | 'category_group' | 'payee') {
+  const scalar = z.object({ field: z.literal(field), op: idScalarOps, value: opaqueIdSchema }).strict();
+  const list = z.object({ field: z.literal(field), op: idListOps, value: z.array(opaqueIdSchema).min(1) }).strict();
+  const accountBudget = z.object({
+    field: z.literal('account'),
+    op: z.enum(['onBudget', 'offBudget']),
+    value: opaqueIdSchema
+  }).strict();
+  return field === 'account' ? z.union([scalar, list, accountBudget]) : z.union([scalar, list]);
+}
+
+const importedPayeeConditionSchema = z.union([
+  z.object({ field: z.literal('imported_payee'), op: textScalarOps, value: boundedTextSchema.min(1) }).strict(),
+  z.object({ field: z.literal('imported_payee'), op: idListOps, value: z.array(boundedTextSchema.min(1)).min(1) }).strict()
+]);
+const notesConditionSchema = z.object({
+  field: z.literal('notes'),
+  op: z.enum(['is', 'isNot', 'contains', 'doesNotContain', 'matches', 'hasTags', 'hasAnyTag']),
+  value: boundedTextSchema.min(1)
+}).strict();
+const amountConditionOptionsSchema = z.object({ inflow: z.boolean().optional(), outflow: z.boolean().optional() }).strict()
+  .refine(value => !(value.inflow && value.outflow), 'Amount options cannot select both inflow and outflow.');
+const amountConditionSchema = z.union([
+  z.object({
+    field: z.literal('amount'),
+    op: z.enum(['is', 'isapprox', 'gt', 'gte', 'lt', 'lte']),
+    value: integerAmountSchema,
+    options: amountConditionOptionsSchema.optional()
+  }).strict(),
+  z.object({
+    field: z.literal('amount'),
+    op: z.literal('isbetween'),
+    value: z.object({ num1: integerAmountSchema, num2: integerAmountSchema }).strict(),
+    options: amountConditionOptionsSchema.optional()
+  }).strict()
+]);
+const dateConditionSchema = z.object({
+  field: z.literal('date'),
+  op: z.enum(['is', 'isapprox', 'gt', 'gte', 'lt', 'lte']),
+  value: isoDateSchema,
+  options: z.object({ month: z.boolean().optional(), year: z.boolean().optional() }).strict().optional()
+}).strict();
+const savedConditionSchema = z.object({ field: z.literal('saved'), op: z.literal('is'), value: boundedTextSchema }).strict();
+const booleanConditionSchema = z.union([
+  z.object({ field: z.literal('cleared'), op: z.literal('is'), value: z.boolean() }).strict(),
+  z.object({ field: z.literal('reconciled'), op: z.literal('is'), value: z.boolean() }).strict(),
+  z.object({ field: z.literal('transfer'), op: z.literal('is'), value: z.boolean() }).strict()
+]);
+
+export const writableRuleConditionSchema = z.union([
+  idCondition('account'),
+  idCondition('category'),
+  idCondition('category_group'),
+  idCondition('payee'),
+  importedPayeeConditionSchema,
+  notesConditionSchema,
+  amountConditionSchema,
+  dateConditionSchema,
+  savedConditionSchema,
+  booleanConditionSchema
+]).describe('One supported field/operator/value rule condition.');
+
+const setIdActionSchema = z.union([
+  z.object({ op: z.literal('set'), field: z.literal('category'), value: opaqueIdSchema }).strict(),
+  z.object({ op: z.literal('set'), field: z.literal('payee'), value: opaqueIdSchema }).strict(),
+  z.object({ op: z.literal('set'), field: z.literal('account'), value: opaqueIdSchema }).strict()
+]);
+
+export const writableRuleActionSchema = z.union([
+  setIdActionSchema,
+  z.object({ op: z.literal('set'), field: z.literal('notes'), value: boundedTextSchema }).strict(),
+  z.object({ op: z.literal('set'), field: z.literal('cleared'), value: z.boolean() }).strict(),
+  z.object({ op: z.literal('set'), field: z.literal('date'), value: isoDateSchema }).strict(),
+  z.object({ op: z.literal('set'), field: z.literal('amount'), value: integerAmountSchema }).strict(),
+  z.object({ op: z.literal('prepend-notes'), value: boundedTextSchema }).strict(),
+  z.object({ op: z.literal('append-notes'), value: boundedTextSchema }).strict()
+]).describe('One supported non-destructive rule action.');
+
+const ruleConditionOptionsReadSchema = z.object({
+  inflow: z.boolean().optional(), outflow: z.boolean().optional(), month: z.boolean().optional(), year: z.boolean().optional()
+}).strict();
+export const ruleConditionReadSchema = z.object({
+  field: z.enum(['account', 'category', 'category_group', 'amount', 'date', 'notes', 'payee', 'imported_payee', 'saved', 'cleared', 'reconciled', 'transfer']),
+  op: z.enum(['is', 'isNot', 'oneOf', 'notOneOf', 'contains', 'doesNotContain', 'matches', 'onBudget', 'offBudget', 'isapprox', 'isbetween', 'gt', 'gte', 'lt', 'lte', 'hasTags', 'hasAnyTag']),
+  value: z.unknown(),
+  options: ruleConditionOptionsReadSchema.nullable().optional(),
+  conditionsOp: ruleConditionsOpSchema.optional(),
+  type: z.enum(['id', 'boolean', 'date', 'number', 'string']).optional(),
+  customName: z.string().optional(),
+  queryFilter: z.record(z.string(), z.object({ $oneof: z.array(z.string()) }).strict()).optional()
+}).strict();
+
+const setRuleActionReadSchema = z.object({
+  op: z.literal('set'), field: z.string(), value: z.unknown(),
+  options: z.object({ template: z.string().optional(), formula: z.string().optional(), splitIndex: z.number().int().optional() }).strict().nullable().optional(),
+  type: z.string().optional()
+}).strict();
+export const ruleActionReadSchema = z.union([
+  setRuleActionReadSchema,
+  z.object({
+    op: z.literal('set-split-amount'), field: z.null().optional(), value: integerAmountSchema.nullable(),
+    options: z.object({ splitIndex: z.number().int().optional(), method: z.enum(['fixed-amount', 'fixed-percent', 'formula', 'remainder']), formula: z.string().optional() }).strict().nullable().optional(),
+    type: z.string().optional()
+  }).strict(),
+  z.object({ op: z.literal('link-schedule'), field: z.null().optional(), value: opaqueIdSchema, type: z.string().optional() }).strict(),
+  z.object({ op: z.literal('prepend-notes'), field: z.literal('notes').optional(), value: z.string(), type: z.string().optional() }).strict(),
+  z.object({ op: z.literal('append-notes'), field: z.literal('notes').optional(), value: z.string(), type: z.string().optional() }).strict(),
+  z.object({ op: z.literal('delete-transaction'), field: z.null().optional(), value: z.string(), type: z.string().optional() }).strict()
+]);
+
+export const ruleSchema = z.object({
+  id: opaqueIdSchema,
+  stage: ruleStageSchema,
+  conditionsOp: ruleConditionsOpSchema,
+  conditions: z.array(ruleConditionReadSchema),
+  actions: z.array(ruleActionReadSchema),
+  writable: z.boolean(),
+  writeRestriction: z.string().optional()
+}).strict().describe('Complete normalized rule with MCP writability classification.');
+
+export const rulesOutputSchema = z.object({ rules: z.array(ruleSchema) }).strict()
+  .describe('All Actual rules in official execution order.');
+export const ruleIdInputSchema = z.object({ ruleId: opaqueIdSchema }).strict()
+  .describe('Opaque identifier of the requested rule.');
+export const ruleOutputSchema = z.object({ rule: ruleSchema }).strict().describe('The requested Actual rule.');
+
+export const createRuleInputSchema = z.object({
+  stage: ruleStageSchema,
+  conditionsOp: ruleConditionsOpSchema,
+  conditions: z.array(writableRuleConditionSchema).min(1, 'At least one condition is required.'),
+  actions: z.array(writableRuleActionSchema).min(1, 'At least one action is required.')
+}).strict().describe('Complete supported rule authoring request.');
+
+export const updateRuleInputSchema = z.object({
+  ruleId: opaqueIdSchema,
+  stage: ruleStageSchema.optional(),
+  conditionsOp: ruleConditionsOpSchema.optional(),
+  conditions: z.array(writableRuleConditionSchema).min(1, 'Conditions must not be empty.').optional(),
+  actions: z.array(writableRuleActionSchema).min(1, 'Actions must not be empty.').optional()
+}).strict().refine(value => value.stage !== undefined || value.conditionsOp !== undefined || value.conditions !== undefined || value.actions !== undefined, {
+  message: 'At least one permitted rule update field is required.'
+}).describe('Rule identifier and one or more allowlisted desired-state changes.');
+
+export const deleteRuleInputSchema = z.object({
+  ruleId: opaqueIdSchema,
+  confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
+}).strict().describe('DESTRUCTIVE OPERATION input for deleting one identified rule.');
+
+export const ruleMutationOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  rule: ruleSchema
+}).strict().describe('Persisted normalized rule after creation or desired-state update.');
+
+export const ruleDeletionOutputSchema = z.object({
+  success: z.literal(true),
+  deletedRuleId: opaqueIdSchema
+}).strict().describe('Immutable result of one confirmed protected rule deletion.');

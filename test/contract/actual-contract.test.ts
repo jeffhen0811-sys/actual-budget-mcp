@@ -6,9 +6,11 @@ import { ActualClient } from '../../src/actual/client.js';
 import type { ActualConfig } from '../../src/config.js';
 import {
   accountSchema,
+  administeredPayeeSchema,
   administeredCategoryGroupSchema,
   administeredCategorySchema,
   categoryGroupSchema,
+  ruleSchema,
   transactionSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
@@ -90,6 +92,33 @@ describe('Actual data contracts observed through @actual-app/api', () => {
     } finally {
       await client.shutdown();
     }
+  });
+
+  it('pins ordinary and transfer payees plus representative installed rule shapes', () => {
+    expect(administeredPayeeSchema.parse({ id: 'ordinary', name: 'Market', transferAccountId: null })).toMatchObject({ transferAccountId: null });
+    expect(administeredPayeeSchema.parse({ id: 'transfer', name: 'Checking', transferAccountId: 'account' })).toMatchObject({ transferAccountId: 'account' });
+    const fixtures = [
+      {
+        id: 'pre', stage: 'pre', conditionsOp: 'and', writable: true,
+        conditions: [{ field: 'imported_payee', op: 'contains', value: 'market', type: 'string' }],
+        actions: [{ op: 'set', field: 'payee', value: 'payee', type: 'id' }]
+      },
+      {
+        id: 'default', stage: 'default', conditionsOp: 'or', writable: true,
+        conditions: [{ field: 'payee', op: 'oneOf', value: ['payee-a', 'payee-b'], type: 'id', options: null }],
+        actions: [{ op: 'append-notes', field: 'notes', value: 'reviewed', type: 'id' }]
+      },
+      {
+        id: 'post', stage: 'post', conditionsOp: 'and', writable: false,
+        conditions: [{ field: 'amount', op: 'isbetween', value: { num1: -2000, num2: -1000 }, type: 'number', options: { outflow: true } }],
+        actions: [
+          { op: 'set', field: 'amount', value: 100, type: 'number', options: { formula: '=amount' } },
+          { op: 'set-split-amount', field: null, value: null, type: 'number', options: { method: 'remainder', splitIndex: 1 } }
+        ],
+        writeRestriction: 'Advanced rule.'
+      }
+    ];
+    for (const rule of fixtures) expect(() => ruleSchema.parse(rule)).not.toThrow();
   });
 
   it('passes real-shape nullable SDK records through the production mapper and output schema', async () => {

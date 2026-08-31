@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.2.0 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.3.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Twenty-four read, transaction, budget-structure, health, and synchronization tools.
+- Thirty-four read, transaction, budget-structure, payee, rule, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -187,6 +187,65 @@ The implementation is limited to public methods exported by the installed `@actu
 
 After a local mutation followed by sync failure, `MUTATION_SYNC_FAILED` is non-retryable and includes `recoveryAction: "actual_sync"` with `local_change_may_have_succeeded`. If sync succeeds but verification fails, `POST_MUTATION_READ_FAILED` reports `synchronized_but_unverified`. Run `actual_sync` and read the entity before deciding on any further mutation; do not replay a destructive call automatically.
 
+## Payees
+
+Version 0.3.0 adds single-payee reads and safe ordinary-payee administration. `actual_list_payees` remains exactly compatible with v0.2.0 and still returns only `id` and `name`; transfer context appears only in `actual_get_payee` as optional or nullable `transferAccountId`.
+
+| Tool | Strict input | Output and safety behavior |
+| --- | --- | --- |
+| `actual_get_payee` | `payeeId` | Returns one payee and official transfer-account context, or `NOT_FOUND`. |
+| `actual_create_payee` | `name` | Creates and verifies an ordinary payee. A single exact trimmed ordinary-name match returns `changed: false`; ambiguous matches fail. |
+| `actual_update_payee` | `payeeId`, `name` | Renames an ordinary payee by desired state. Transfer payees return `TRANSFER_PAYEE_PROTECTED`. |
+| `actual_delete_payee` | `payeeId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Scans all account histories, subtransactions, and associated rules; only a proven-unused ordinary payee can be deleted. An unconfirmed call returns safe reference counts. |
+| `actual_merge_payees` | non-empty unique `sourcePayeeIds`, distinct `targetPayeeId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Reports per-source impact, invokes the official merge once, synchronizes, and verifies source absence plus transaction/rule remapping. Transfer payees are protected. |
+
+Examples:
+
+```text
+actual_get_payee     {"payeeId":"payee-id"}
+actual_create_payee  {"name":"Neighborhood market"}
+actual_update_payee  {"payeeId":"payee-id","name":"Neighborhood Market"}
+actual_delete_payee  {"payeeId":"unused-payee-id","confirmDestructive":true}
+actual_merge_payees  {"sourcePayeeIds":["source-a","source-b"],"targetPayeeId":"target","confirmDestructive":true}
+```
+
+A merge has no transactional report in the SDK. If its mutation, synchronization, or verification becomes ambiguous, the MCP returns non-retryable `MERGE_PARTIAL_STATE` with `recoveryAction: "actual_sync"`. Inspect every named source and target plus affected transactions/rules; never replay the merge automatically.
+
+## Rules
+
+Rules are returned in Actual's ranked execution order. MCP stages are `pre`, `default`, and `post`; the adapter translates MCP `default` to the installed SDK's `null` representation and translates it back on reads. Reads preserve the pinned condition/action semantics and mark each rule `writable`. Advanced existing actions remain readable and deletable but are not silently rewritten.
+
+| Tool | Strict input | Output and safety behavior |
+| --- | --- | --- |
+| `actual_list_rules` | `{}` | Returns all ranked rules with normalized stage, complete pinned conditions/actions, and writability. |
+| `actual_get_rule` | `ruleId` | Returns the same complete representation for one stable rule ID. |
+| `actual_create_rule` | `stage`, `conditionsOp`, non-empty `conditions`, non-empty `actions` | Creates a new rule after field/operator/value and account/category-group/category/payee reference validation. Creation is intentionally non-idempotent. |
+| `actual_update_rule` | `ruleId` and at least one of `stage`, `conditionsOp`, `conditions`, `actions` | Loads the complete current rule and calls the SDK's full-object update. A matching desired state returns `changed: false`; advanced read-only rules are refused. |
+| `actual_delete_rule` | `ruleId`, `confirmDestructive: true` | **DESTRUCTIVE OPERATION.** Deletes one rule only; a `false` SDK result becomes `PROTECTED_ACTUAL_ENTITY`. Existing transactions are not changed. |
+
+Supported authoring conditions use strict field/operator/value combinations for accounts, categories, category groups, payees, imported payees, notes, integer amounts, dates, saved state, cleared state, reconciliation, and transfers. Supported actions are non-destructive `set` operations for category, payee, notes, cleared, account, date, and integer amount plus `prepend-notes` and `append-notes`. Arbitrary options, formulas, templates, split actions, schedule links, and transaction deletion are rejected for writes.
+
+Example payee-normalization rule:
+
+```json
+{
+  "stage": "pre",
+  "conditionsOp": "and",
+  "conditions": [{"field":"imported_payee","op":"contains","value":"market"}],
+  "actions": [{"op":"set","field":"payee","value":"existing-payee-id"}]
+}
+```
+
+Example desired-state update:
+
+```json
+{"ruleId":"rule-id","stage":"post"}
+```
+
+## Automatic categorization foundation
+
+Persisted rules execute through Actual's official import pipeline. Create a rule that sets an existing payee or category, then call `actual_import_transactions` with a unique `imported_id` and matching `imported_payee`; subsequent reads show Actual's official result. Version 0.3.0 does not expose `actual_run_rules` or `actual_preview_rule`: the pinned public SDK exports neither manual execution nor unpublished-rule preview, and the MCP does not call bundled internal handlers.
+
 ## Development
 
 ```bash
@@ -287,13 +346,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.2.0 .
+docker build -t actual-budget-mcp:0.3.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.2.0
+  actual-budget-mcp:0.3.0
 ```
 
 ## Security
@@ -316,4 +375,4 @@ docker run --rm -i \
 
 ## Scope
 
-Version 0.2.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, rules, budgeting writes, reports, LLM categorization, financial recommendations, or an HTTP MCP transport.
+Version 0.3.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, budgeting writes, reports, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.

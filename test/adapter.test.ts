@@ -7,12 +7,14 @@ const sdk = vi.hoisted(() => ({
   createCategoryGroup: vi.fn(), updateCategoryGroup: vi.fn(), deleteCategoryGroup: vi.fn(), getCategories: vi.fn(),
   createCategory: vi.fn(), updateCategory: vi.fn(), deleteCategory: vi.fn(), getBudgetMonths: vi.fn(),
   getBudgetMonth: vi.fn(), getPayees: vi.fn(), getTransactions: vi.fn(), importTransactions: vi.fn(),
+  createPayee: vi.fn(), updatePayee: vi.fn(), deletePayee: vi.fn(), mergePayees: vi.fn(),
+  getPayeeRules: vi.fn(), getRules: vi.fn(), createRule: vi.fn(), updateRule: vi.fn(), deleteRule: vi.fn(),
   updateTransaction: vi.fn(), deleteTransaction: vi.fn()
 }));
 
 vi.mock('@actual-app/api', () => sdk);
 
-import { actualApiAdapter } from '../src/actual/adapter.js';
+import { actualApiAdapter, type AdapterRule } from '../src/actual/adapter.js';
 
 describe('Actual 26.8.1 adapter compatibility', () => {
   beforeEach(() => vi.clearAllMocks());
@@ -63,5 +65,34 @@ describe('Actual 26.8.1 adapter compatibility', () => {
 
     await expect(actualApiAdapter.updateCategory('missing', { hidden: true })).rejects.toThrow('Category with id missing not found.');
     expect(sdk.updateCategory).not.toHaveBeenCalled();
+  });
+
+  it('forwards every official payee and rule binding with exact payloads', async () => {
+    const rule: AdapterRule = { id: 'rule-id', stage: null, conditionsOp: 'and', conditions: [], actions: [] };
+    sdk.createPayee.mockResolvedValue('payee-id');
+    sdk.getPayeeRules.mockResolvedValue([rule]);
+    sdk.getRules.mockResolvedValue([rule]);
+    sdk.createRule.mockResolvedValue(rule);
+    sdk.updateRule.mockResolvedValue(rule);
+    sdk.deleteRule.mockResolvedValue(false);
+
+    await expect(actualApiAdapter.createPayee({ name: 'Cafe' })).resolves.toBe('payee-id');
+    await actualApiAdapter.updatePayee('payee-id', { name: 'Cafe renamed' });
+    await actualApiAdapter.deletePayee('payee-id');
+    await actualApiAdapter.mergePayees('target', ['source']);
+    await expect(actualApiAdapter.getPayeeRules('payee-id')).resolves.toEqual([rule]);
+    await expect(actualApiAdapter.getRules()).resolves.toEqual([rule]);
+    await expect(actualApiAdapter.createRule({ stage: null, conditionsOp: 'and', conditions: [], actions: [] })).resolves.toEqual(rule);
+    await expect(actualApiAdapter.updateRule(rule)).resolves.toEqual(rule);
+    await expect(actualApiAdapter.deleteRule('rule-id')).resolves.toBe(false);
+
+    expect(sdk.createPayee).toHaveBeenCalledWith({ name: 'Cafe' });
+    expect(sdk.updatePayee).toHaveBeenCalledWith('payee-id', { name: 'Cafe renamed' });
+    expect(sdk.deletePayee).toHaveBeenCalledWith('payee-id');
+    expect(sdk.mergePayees).toHaveBeenCalledWith('target', ['source']);
+    expect(sdk.getPayeeRules).toHaveBeenCalledWith('payee-id');
+    expect(sdk.createRule).toHaveBeenCalledWith({ stage: null, conditionsOp: 'and', conditions: [], actions: [] });
+    expect(sdk.updateRule).toHaveBeenCalledWith(rule);
+    expect(sdk.deleteRule).toHaveBeenCalledWith('rule-id');
   });
 });

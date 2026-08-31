@@ -5,6 +5,15 @@ interface FingerprintReader {
   listAccounts(): Promise<Array<{ id: string; name: string; offbudget: boolean; closed: boolean; balance?: number | undefined; balanceError?: string | undefined }>>;
   listCategories(): Promise<Array<{ groupId: string; groupName: string; categories: Array<{ id: string; name: string; hidden: boolean }> }>>;
   listPayees(): Promise<Array<{ id: string; name: string }>>;
+  listRules(): Promise<Array<{
+    id: string;
+    stage: string;
+    conditionsOp: string;
+    conditions: unknown[];
+    actions: unknown[];
+    writable: boolean;
+    writeRestriction?: string | undefined;
+  }>>;
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<Array<{ id: string; [key: string]: unknown }>>;
 }
 
@@ -27,7 +36,8 @@ export async function permanentFixtureFingerprint(reader: FingerprintReader): Pr
       ...group,
       categories: stable(group.categories, category => category.id)
     })),
-    payees: stable(await reader.listPayees(), payee => payee.id)
+    payees: stable(await reader.listPayees(), payee => payee.id),
+    rules: stable(await reader.listRules(), rule => rule.id)
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }

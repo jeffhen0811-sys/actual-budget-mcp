@@ -1,6 +1,7 @@
 import { McpServer, type StandardSchemaWithJSON } from '@modelcontextprotocol/server';
 import type { ActualClient } from '../actual/client.js';
 import type { AdapterTransaction, ImportTransaction } from '../actual/adapter.js';
+import type { WritableRuleDraft } from '../actual/rules.js';
 import type { Logger } from '../logger.js';
 import {
   accountIdInputSchema,
@@ -18,23 +19,40 @@ import {
   createAccountInputSchema,
   createCategoryGroupInputSchema,
   createCategoryInputSchema,
+  createPayeeInputSchema,
+  createRuleInputSchema,
   deleteAccountInputSchema,
   deleteCategoryGroupInputSchema,
   deleteCategoryInputSchema,
+  deletePayeeInputSchema,
+  deleteRuleInputSchema,
   deleteTransactionInputSchema,
   emptyInputSchema,
   getTransactionsInputSchema,
   healthOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
+  mergePayeesInputSchema,
   moveCategoryInputSchema,
   payeesOutputSchema,
+  payeeDeletionOutputSchema,
+  payeeIdInputSchema,
+  payeeMergeOutputSchema,
+  payeeMutationOutputSchema,
+  payeeOutputSchema,
+  ruleDeletionOutputSchema,
+  ruleIdInputSchema,
+  ruleMutationOutputSchema,
+  ruleOutputSchema,
+  rulesOutputSchema,
   syncOutputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema,
   updateAccountInputSchema,
   updateCategoryGroupInputSchema,
   updateCategoryInputSchema,
+  updatePayeeInputSchema,
+  updateRuleInputSchema,
   updateTransactionInputSchema
 } from './contracts.js';
 import { PublicError } from '../errors.js';
@@ -65,6 +83,16 @@ export interface ToolRuntime {
   hideCategory: ActualClient['hideCategory'];
   unhideCategory: ActualClient['unhideCategory'];
   deleteCategory: ActualClient['deleteCategory'];
+  getPayee: ActualClient['getPayee'];
+  createPayee: ActualClient['createPayee'];
+  updatePayee: ActualClient['updatePayee'];
+  deletePayee: ActualClient['deletePayee'];
+  mergePayees: ActualClient['mergePayees'];
+  listRules: ActualClient['listRules'];
+  getRule: ActualClient['getRule'];
+  createRule: ActualClient['createRule'];
+  updateRule: ActualClient['updateRule'];
+  deleteRule: ActualClient['deleteRule'];
 }
 
 export const TOOL_NAMES = [
@@ -91,10 +119,20 @@ export const TOOL_NAMES = [
   'actual_move_category',
   'actual_hide_category',
   'actual_unhide_category',
-  'actual_delete_category'
+  'actual_delete_category',
+  'actual_get_payee',
+  'actual_create_payee',
+  'actual_update_payee',
+  'actual_delete_payee',
+  'actual_merge_payees',
+  'actual_list_rules',
+  'actual_get_rule',
+  'actual_create_rule',
+  'actual_update_rule',
+  'actual_delete_rule'
 ] as const;
 
-function acceptMissingConfirmationForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
+function acceptUnconfirmedForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
   const standard = schema['~standard'];
   type ValidateValue = Parameters<typeof standard.validate>[0];
   type ValidateOptions = Parameters<typeof standard.validate>[1];
@@ -102,7 +140,8 @@ function acceptMissingConfirmationForStructuredError<T extends StandardSchemaWit
     '~standard': {
       ...standard,
       validate: async (value: ValidateValue, options: ValidateOptions) => {
-        if (value && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'confirmDestructive')) {
+        if (value && typeof value === 'object' && !Array.isArray(value) &&
+            (!Object.hasOwn(value, 'confirmDestructive') || (value as Record<string, unknown>).confirmDestructive === false)) {
           const result = await standard.validate({ ...value, confirmDestructive: true }, options);
           if (result.issues) return result;
           return { value: { ...(result.value as Record<string, unknown>), confirmDestructive: false } };
@@ -113,13 +152,16 @@ function acceptMissingConfirmationForStructuredError<T extends StandardSchemaWit
   } as unknown as T;
 }
 
-const deleteAccountToolInputSchema = acceptMissingConfirmationForStructuredError(deleteAccountInputSchema);
-const deleteCategoryGroupToolInputSchema = acceptMissingConfirmationForStructuredError(deleteCategoryGroupInputSchema);
-const deleteCategoryToolInputSchema = acceptMissingConfirmationForStructuredError(deleteCategoryInputSchema);
+const deleteAccountToolInputSchema = acceptUnconfirmedForStructuredError(deleteAccountInputSchema);
+const deleteCategoryGroupToolInputSchema = acceptUnconfirmedForStructuredError(deleteCategoryGroupInputSchema);
+const deleteCategoryToolInputSchema = acceptUnconfirmedForStructuredError(deleteCategoryInputSchema);
+const deletePayeeToolInputSchema = acceptUnconfirmedForStructuredError(deletePayeeInputSchema);
+const mergePayeesToolInputSchema = acceptUnconfirmedForStructuredError(mergePayeesInputSchema);
+const deleteRuleToolInputSchema = acceptUnconfirmedForStructuredError(deleteRuleInputSchema);
 
 export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.2.0' },
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.3.0' },
     { instructions: 'Amounts are integer minor units. Use confirmDestructive=true only for an explicitly authorized deletion.' }
   );
 
@@ -491,6 +533,156 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
       ), 'actual_delete_category', logger);
       try { return successResult(await runtime.deleteCategory(categoryId)); }
       catch (error) { return toolError(error, 'actual_delete_category', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_payee',
+    {
+      title: 'Get Actual payee',
+      description: 'Get one Actual payee and its official transfer-account relationship when present.',
+      inputSchema: payeeIdInputSchema,
+      outputSchema: payeeOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ payeeId }) => {
+      try { return successResult({ payee: await runtime.getPayee(payeeId) }); }
+      catch (error) { return toolError(error, 'actual_get_payee', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_payee',
+    {
+      title: 'Create Actual payee',
+      description: 'Create an ordinary payee or return the single exact existing ordinary payee, then verify persisted state.',
+      inputSchema: createPayeeInputSchema,
+      outputSchema: payeeMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ name }) => {
+      try { return successResult(await runtime.createPayee(name)); }
+      catch (error) { return toolError(error, 'actual_create_payee', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_update_payee',
+    {
+      title: 'Rename Actual payee',
+      description: 'Rename one ordinary payee to the desired trimmed name; transfer payees are protected.',
+      inputSchema: updatePayeeInputSchema,
+      outputSchema: payeeMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ payeeId, name }) => {
+      try { return successResult(await runtime.updatePayee(payeeId, name)); }
+      catch (error) { return toolError(error, 'actual_update_payee', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_delete_payee',
+    {
+      title: 'Delete unused Actual payee',
+      description: 'DESTRUCTIVE OPERATION: Preflight all transaction and rule references, then delete one proven-unused ordinary payee only with literal confirmation.',
+      inputSchema: deletePayeeToolInputSchema,
+      outputSchema: payeeDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ payeeId, confirmDestructive }) => {
+      try { return successResult(await runtime.deletePayee(payeeId, confirmDestructive)); }
+      catch (error) { return toolError(error, 'actual_delete_payee', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_merge_payees',
+    {
+      title: 'Merge Actual payees',
+      description: 'DESTRUCTIVE OPERATION: Preflight and merge ordinary source payees into one distinct ordinary target only with literal confirmation.',
+      inputSchema: mergePayeesToolInputSchema,
+      outputSchema: payeeMergeOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ sourcePayeeIds, targetPayeeId, confirmDestructive }) => {
+      try { return successResult(await runtime.mergePayees(sourcePayeeIds, targetPayeeId, confirmDestructive)); }
+      catch (error) { return toolError(error, 'actual_merge_payees', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_list_rules',
+    {
+      title: 'List Actual rules',
+      description: 'List every Actual rule in official execution order with complete pinned semantics and MCP writability.',
+      inputSchema: emptyInputSchema,
+      outputSchema: rulesOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async () => {
+      try { return successResult({ rules: await runtime.listRules() }); }
+      catch (error) { return toolError(error, 'actual_list_rules', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_rule',
+    {
+      title: 'Get Actual rule',
+      description: 'Get one Actual rule by stable opaque identifier with complete pinned semantics and MCP writability.',
+      inputSchema: ruleIdInputSchema,
+      outputSchema: ruleOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ ruleId }) => {
+      try { return successResult({ rule: await runtime.getRule(ruleId) }); }
+      catch (error) { return toolError(error, 'actual_get_rule', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_rule',
+    {
+      title: 'Create Actual rule',
+      description: 'Create one supported non-destructive Actual rule after validating every referenced entity.',
+      inputSchema: createRuleInputSchema,
+      outputSchema: ruleMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async input => {
+      try { return successResult(await runtime.createRule(input as WritableRuleDraft)); }
+      catch (error) { return toolError(error, 'actual_create_rule', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_update_rule',
+    {
+      title: 'Update Actual rule',
+      description: 'Apply allowlisted desired-state changes to one MCP-writable rule using the official full-object update.',
+      inputSchema: updateRuleInputSchema,
+      outputSchema: ruleMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ ruleId, ...fields }) => {
+      try { return successResult(await runtime.updateRule(ruleId, fields as Parameters<ToolRuntime['updateRule']>[1])); }
+      catch (error) { return toolError(error, 'actual_update_rule', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_delete_rule',
+    {
+      title: 'Delete Actual rule',
+      description: 'DESTRUCTIVE OPERATION: Delete one identified rule only with literal confirmation and respect Actual-protected rules.',
+      inputSchema: deleteRuleToolInputSchema,
+      outputSchema: ruleDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ ruleId, confirmDestructive }) => {
+      try { return successResult(await runtime.deleteRule(ruleId, confirmDestructive)); }
+      catch (error) { return toolError(error, 'actual_delete_rule', logger); }
     }
   );
 

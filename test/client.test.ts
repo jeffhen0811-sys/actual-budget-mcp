@@ -26,12 +26,14 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
     vi.mocked(api.downloadBudget).mockImplementation(() => new Promise<void>(resolve => { release = resolve; }));
     const accounts = client.listAccounts();
     const payees = client.listPayees();
+    const rules = client.listRules();
     await vi.waitFor(() => expect(api.downloadBudget).toHaveBeenCalledOnce());
     release();
-    await Promise.all([accounts, payees]);
+    await Promise.all([accounts, payees, rules]);
     expect(api.init).toHaveBeenCalledOnce();
     expect(api.getAccounts).toHaveBeenCalledOnce();
     expect(api.getPayees).toHaveBeenCalledOnce();
+    expect(api.getRules).toHaveBeenCalledOnce();
     await client.shutdown();
   });
 

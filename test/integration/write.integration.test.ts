@@ -12,6 +12,7 @@ import {
   skipMessage
 } from '../real/env.js';
 import { matchesTemporaryTestPayee, TEMPORARY_TEST_PAYEE } from '../real/ownership.js';
+import { assertPayeeWriteAllowed } from '../real/ownership.js';
 import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 import { ResourceRegistry } from '../real/resources.js';
 
@@ -68,10 +69,13 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
       if (client && accountId && importedId) {
         await registry.cleanup({
           transaction: async resource => { await client.deleteTransaction(resource.id); },
+          rule: async resource => { await client.deleteRule(resource.id, true); },
+          payee: async resource => { assertPayeeWriteAllowed(resource.name, 'delete'); await client.deletePayee(resource.id, true); },
           category: async resource => { await client.deleteCategory(resource.id); },
           categoryGroup: async resource => { await client.deleteCategoryGroup(resource.id); },
           account: async resource => { await client.deleteAccount(resource.id); }
         });
+        registry.assertEmpty();
         expect(await ownedTransactions(), `Cleanup failed for transactionId=${transactionId || '[unknown]'} imported_id=${importedId}`).toHaveLength(0);
         expect(await permanentFixtureFingerprint(client)).toBe(baselineFingerprint);
       }
@@ -146,6 +150,137 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
     expect(await ownedTransactions()).toHaveLength(0);
   });
 
+  it('runs the guarded real payee create, read, rename, preflight, and delete lifecycle', async () => {
+    const runId = randomUUID();
+    const originalName = `Mcp Integration Payee ${runId}`;
+    const renamedName = `Mcp Integration Payee Renamed ${runId}`;
+    assertPayeeWriteAllowed(originalName, 'reuse');
+    const created = await client.createPayee(originalName);
+    registry.register('payee', created.payee.id, originalName);
+    expect(created).toMatchObject({ changed: true, payee: { name: originalName } });
+    await expect(client.createPayee(originalName)).resolves.toMatchObject({ changed: false, payee: { id: created.payee.id } });
+    await expect(client.getPayee(created.payee.id)).resolves.toMatchObject({ id: created.payee.id, name: originalName });
+    assertPayeeWriteAllowed(originalName, 'rename');
+    const renamed = await client.updatePayee(created.payee.id, renamedName);
+    expect(renamed).toMatchObject({ changed: true, payee: { name: renamedName } });
+    registry.release('payee', created.payee.id);
+    registry.register('payee', created.payee.id, renamedName);
+    await expect(client.deletePayee(created.payee.id, false)).rejects.toMatchObject({
+      code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED', metadata: { details: { relatedTransactionCount: 0, relatedRuleCount: 0 } }
+    });
+    assertPayeeWriteAllowed(renamedName, 'delete');
+    await expect(client.deletePayee(created.payee.id, true)).resolves.toMatchObject({ deletedPayeeId: created.payee.id });
+    registry.release('payee', created.payee.id);
+    await expect(client.getPayee(created.payee.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('merges uniquely owned ordinary payees and remaps an owned source transaction', async () => {
+    const runId = randomUUID();
+    const sourceName = `Mcp Integration Merge Source ${runId}`;
+    const targetName = `Mcp Integration Merge Target ${runId}`;
+    const source = await client.createPayee(sourceName);
+    const target = await client.createPayee(targetName);
+    registry.register('payee', source.payee.id, sourceName);
+    registry.register('payee', target.payee.id, targetName);
+    const mergeImportedId = `mcp-integration-merge:${runId}`;
+    const imported = await client.importTransactions(accountId, [{
+      date: TEST_DATE,
+      amount: -321,
+      imported_id: mergeImportedId,
+      imported_payee: sourceName,
+      payee_name: sourceName,
+      notes: 'MCP INTEGRATION MERGE TEMPORARY'
+    }]);
+    expect(imported.errors).toEqual([]);
+    for (const id of imported.added) registry.register('transaction', id, mergeImportedId);
+    const sourceTransaction = (await currentTransactions()).find(transaction => imported.added.includes(transaction.id));
+    expect(sourceTransaction).toMatchObject({ payee: source.payee.id });
+    await expect(client.mergePayees([source.payee.id], target.payee.id, false)).rejects.toMatchObject({
+      code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED',
+      metadata: { details: { impacts: [expect.objectContaining({ relatedTransactionCount: 1 })] } }
+    });
+    assertPayeeWriteAllowed(sourceName, 'merge');
+    assertPayeeWriteAllowed(targetName, 'merge');
+    await expect(client.mergePayees([source.payee.id], target.payee.id, true)).resolves.toMatchObject({
+      targetPayee: { id: target.payee.id }, mergedSourcePayeeIds: [source.payee.id]
+    });
+    registry.release('payee', source.payee.id);
+    await expect(client.getPayee(source.payee.id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect((await currentTransactions()).find(transaction => transaction.id === sourceTransaction!.id)).toMatchObject({ payee: target.payee.id });
+    for (const id of imported.added) {
+      await client.deleteTransaction(id);
+      registry.release('transaction', id);
+    }
+    await client.deletePayee(target.payee.id, true);
+    registry.release('payee', target.payee.id);
+  });
+
+  it('persists, updates, functionally executes, and deletes a uniquely owned rule', async () => {
+    const runId = randomUUID();
+    const payeeName = `Mcp Integration Rule Payee ${runId}`;
+    const rawPayee = `MCP_RULE_MATCH_${runId}`;
+    const ruleImportedId = `mcp-integration-rule:${runId}`;
+    const payee = await client.createPayee(payeeName);
+    registry.register('payee', payee.payee.id, payeeName);
+    const created = await client.createRule({
+      stage: 'pre',
+      conditionsOp: 'and',
+      conditions: [{ field: 'imported_payee', op: 'contains', value: rawPayee }],
+      actions: [{ op: 'set', field: 'payee', value: payee.payee.id }]
+    });
+    registry.register('rule', created.rule.id, `rule-${runId}`);
+    expect(created.rule).toMatchObject({ stage: 'pre', writable: true });
+    expect((await client.listRules()).some(rule => rule.id === created.rule.id)).toBe(true);
+    await expect(client.getRule(created.rule.id)).resolves.toEqual(created.rule);
+    await expect(client.updateRule(created.rule.id, { stage: 'default' })).resolves.toMatchObject({ changed: true, rule: { stage: 'default' } });
+    await expect(client.updateRule(created.rule.id, { stage: 'post' })).resolves.toMatchObject({ changed: true, rule: { stage: 'post' } });
+    await expect(client.updateRule(created.rule.id, { stage: 'pre' })).resolves.toMatchObject({ changed: true, rule: { stage: 'pre' } });
+    await expect(client.updateRule(created.rule.id, { stage: 'pre' })).resolves.toMatchObject({ changed: false });
+    await expect(client.deleteRule(created.rule.id, false)).rejects.toMatchObject({ code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' });
+
+    const imported = await client.importTransactions(accountId, [{
+      date: TEST_DATE,
+      amount: -456,
+      imported_id: ruleImportedId,
+      imported_payee: rawPayee,
+      payee_name: rawPayee,
+      notes: 'MCP INTEGRATION RULE TEMPORARY'
+    }]);
+    expect(imported.errors).toEqual([]);
+    for (const id of imported.added) registry.register('transaction', id, ruleImportedId);
+    const functional = (await currentTransactions()).find(transaction => imported.added.includes(transaction.id));
+    expect(functional).toMatchObject({ payee: payee.payee.id });
+
+    await client.deleteRule(created.rule.id, true);
+    registry.release('rule', created.rule.id);
+    expect((await currentTransactions()).find(transaction => transaction.id === functional!.id)).toMatchObject({ payee: payee.payee.id });
+    for (const id of imported.added) {
+      await client.deleteTransaction(id);
+      registry.release('transaction', id);
+    }
+    await client.deletePayee(payee.payee.id, true);
+    registry.release('payee', payee.payee.id);
+  });
+
+  it('rejects invalid payee/rule operations and remains operational after every error', async () => {
+    const missing = `missing-${randomUUID()}`;
+    await expect(client.getPayee(missing)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(client.getRule(missing)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(client.createRule({
+      stage: 'default', conditionsOp: 'and',
+      conditions: [{ field: 'payee', op: 'is', value: missing }],
+      actions: [{ op: 'set', field: 'notes', value: 'never' }]
+    })).rejects.toMatchObject({ code: 'INVALID_REFERENCE' });
+    await expect(client.createRule({ stage: 'default', conditionsOp: 'and', conditions: [], actions: [] }))
+      .rejects.toMatchObject({ code: 'UNSUPPORTED_RULE_SHAPE' });
+    const listed = await client.listPayees();
+    const detailed = await Promise.all(listed.map(payee => client.getPayee(payee.id)));
+    const transfer = detailed.find(payee => typeof payee.transferAccountId === 'string');
+    expect(transfer).toBeDefined();
+    await expect(client.updatePayee(transfer!.id, 'Must Not Rename')).rejects.toMatchObject({ code: 'TRANSFER_PAYEE_PROTECTED' });
+    await expect(client.health()).resolves.toMatchObject({ connected: true, budgetLoaded: true });
+  });
+
   it('administers isolated account and category structure with exact-ID cleanup and complete safety preflights', async () => {
     const runId = randomUUID();
     const groupA = await client.createCategoryGroup(`MCP_INTEGRATION_TEST_GROUP_A_${runId}`);
@@ -173,7 +308,7 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
 
     const account = await client.createAccount(`MCP_INTEGRATION_TEST_ACCOUNT_${runId}`, false, -12030);
     registry.register('account', account.account.id, account.account.name);
-    const openingTransactions = await client.getTransactions(account.account.id, TEST_DATE, TEST_DATE);
+    const openingTransactions = await client.getTransactions(account.account.id, '1900-01-01', '2999-12-31');
     expect(openingTransactions.length).toBeGreaterThan(0);
     for (const transaction of openingTransactions) registry.register('transaction', transaction.id, `opening-balance-${runId}`);
     const offset = await client.importTransactions(account.account.id, [{
