@@ -4,8 +4,11 @@ import { ActualClient } from '../../src/actual/client.js';
 import {
   accountsOutputSchema,
   administeredPayeeSchema,
+  budgetMonthOutputSchema,
+  budgetSummaryOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  listBudgetMonthsOutputSchema,
   payeesOutputSchema,
   ruleSchema,
   rulesOutputSchema,
@@ -54,6 +57,27 @@ realDescribe.sequential('real Actual read integration', () => {
     const parsed = categoriesOutputSchema.parse({ categoryGroups });
     expect(parsed.categoryGroups.length).toBeGreaterThan(0);
     expect(parsed.categoryGroups.some(group => group.categories.length > 0)).toBe(true);
+  });
+
+  it('discovers official budget months and validates month detail, summaries, filters, signs, and mode projection', async () => {
+    const listed = await client.listBudgetMonths();
+    expect(() => listBudgetMonthsOutputSchema.parse(listed)).not.toThrow();
+    expect(listed.count).toBe(listed.months.length);
+    expect(listed.count).toBeGreaterThan(0);
+    const month = listed.months.at(-1)!;
+    const detail = await client.getBudgetMonth(month);
+    expect(() => budgetMonthOutputSchema.parse(detail)).not.toThrow();
+    expect(detail.month).toBe(month);
+    for (const value of [detail.totalBudgeted, detail.totalIncome, detail.totalSpent, detail.totalBalance]) {
+      expect(Number.isSafeInteger(value)).toBe(true);
+    }
+    const summary = await client.getBudgetSummary(month, { limit: 500 });
+    expect(() => budgetSummaryOutputSchema.parse(summary)).not.toThrow();
+    const first = detail.categoryGroups.flatMap(group => group.categories.map(category => ({ group, category })))[0];
+    if (first) {
+      const filtered = await client.getBudgetSummary(month, { groupId: first.group.id, categoryId: first.category.id, limit: 1 });
+      expect(filtered.categoryGroups[0]?.categories).toEqual([first.category]);
+    }
   });
 
   it('finds every permanent fake payee through the production payee contract', async () => {

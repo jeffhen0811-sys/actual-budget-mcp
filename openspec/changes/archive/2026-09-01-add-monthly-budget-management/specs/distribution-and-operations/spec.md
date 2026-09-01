@@ -1,10 +1,4 @@
-# distribution-and-operations Specification
-
-## Purpose
-
-Define reproducible installation, execution, update, deployment, documentation, versioning, and verification behavior for distributing the MCP from GitHub and operating it with Hermes.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Package commands and executable
 The project SHALL report version `0.4.0` consistently in package metadata, lockfile root metadata, MCP server metadata, README, and CHANGELOG while keeping `@actual-app/api` exactly `26.8.1`. It SHALL preserve `npm run dev`, `npm run build`, `npm start`, `npm test`, `npm run typecheck`, `npm run test:contract`, `npm run test:integration`, `npm run test:integration:read`, `npm run test:integration:write`, `npm run test:e2e`, `npm run test:e2e:read`, `npm run test:e2e:write`, and `npm run test:all`. `npm start` SHALL execute `node dist/index.js`, and package metadata SHALL keep the `actual-budget-mcp` executable targeting the compiled entry point.
@@ -21,21 +15,6 @@ The project SHALL report version `0.4.0` consistently in package metadata, lockf
 - **WHEN** package and lock metadata are inspected
 - **THEN** `@actual-app/api` remains pinned exactly to `26.8.1`
 
-### Requirement: GitHub installation script
-The repository SHALL provide an executable `install.sh` using `set -euo pipefail`. It SHALL verify Node.js and npm, require a supported Node.js version of at least 22, run `npm ci` when `package-lock.json` exists, build the project, verify `dist/index.js`, create the resolved Actual data directory when necessary, and print a sanitized success message with a Hermes configuration example. It MUST NOT request, persist, or print the Actual password.
-
-#### Scenario: Fresh supported installation
-- **WHEN** a user clones the repository and runs `./install.sh` with Node.js 22 or newer and npm available
-- **THEN** dependencies are installed reproducibly, the project is built, the data directory exists, and the script prints the next configuration step
-
-#### Scenario: Unsupported Node.js
-- **WHEN** the installed Node.js version is below 22
-- **THEN** installation stops before dependency installation with a clear version requirement
-
-#### Scenario: Build artifact missing
-- **WHEN** the build command exits without producing `dist/index.js`
-- **THEN** installation fails with a clear non-secret diagnostic
-
 ### Requirement: Predictable update script
 The repository SHALL provide an executable `update.sh` that performs a fast-forward-only Git pull, updates locked dependencies when needed, builds, and runs the verification defined by the script's existing design. It MUST support a clean v0.3.0 to v0.4.0 update and MUST NOT reset, discard, or overwrite local changes, environment configuration, the local Actual runtime cache, integration cache, MCP E2E cache data, or Hermes configuration.
 
@@ -51,24 +30,6 @@ The repository SHALL provide an executable `update.sh` that performs a fast-forw
 - **WHEN** a safe fast-forward update cannot proceed
 - **THEN** the script stops without destructive Git operations and reports how the operator can inspect the state
 
-### Requirement: Hermes stdio deployment documentation
-The README SHALL document installation under the Hermes persistent data volume, launching the absolute compiled entry path with `command`, `args`, and explicit `env`, and setting `supports_parallel_tool_calls: false`. The example SHALL use the NAS Actual endpoint without assuming that `localhost` reaches another container and SHALL contain placeholders rather than real credentials.
-
-#### Scenario: Hermes configuration example
-- **WHEN** an operator follows the documented example
-- **THEN** Hermes launches the MCP as a local stdio child process and passes only the required Actual environment values
-
-#### Scenario: Container-local localhost warning
-- **WHEN** the Actual Server runs in a separate container
-- **THEN** the documentation instructs the operator to use the NAS address or a shared Docker-network hostname instead of Hermes-container `localhost`
-
-### Requirement: Optional Docker image
-The repository SHALL include a Dockerfile that can build and run the MCP over stdio without making Docker mandatory. The runtime image SHALL support interactive stdin, use an unprivileged user where practical, and allow the Actual cache to be mounted separately from the Actual Server data.
-
-#### Scenario: Containerized stdio run
-- **WHEN** the image is built and started with interactive stdin, required environment variables, network reachability, and a cache volume
-- **THEN** an MCP client can communicate with the process over stdio
-
 ### Requirement: Repository documentation and secret hygiene
 The repository SHALL keep `.env.example`, `.gitignore`, `README.md`, and `CHANGELOG.md`. README SHALL include a `Budget` section documenting integer minor units, strict month format, all eight budget tools, mode-aware income behavior, prospective carryover, incremental hold, reset semantics, dry-run copy, hidden-category opt-in, and overwrite protection. CHANGELOG SHALL contain a `0.4.0` entry with `Added`, `Changed`, and `Fixed`. The installed API contract document SHALL record exact 26.8.1 budget shapes and behavioral findings. All project-authored material SHALL remain in English and examples MUST NOT contain real credentials or financial fixture values.
 
@@ -80,10 +41,6 @@ The repository SHALL keep `.env.example`, `.gitignore`, `README.md`, and `CHANGE
 - **WHEN** budget copy, carryover, hold, or reset is documented
 - **THEN** documentation explains dry-run defaults, overwrite confirmation, hidden opt-in, prospective or incremental effects, and recovery behavior
 
-#### Scenario: Destructive tool documentation
-- **WHEN** payee deletion, payee merge, or rule deletion is documented
-- **THEN** the documentation identifies it as destructive, requires explicit confirmation, and explains its preflight or protected-refusal behavior
-
 #### Scenario: Local environment file
 - **WHEN** a developer creates a local environment file from the example
 - **THEN** Git ignores the secret-bearing file
@@ -94,18 +51,6 @@ The project SHALL include unit tests for every budget schema, shape, client path
 #### Scenario: Pull request verification
 - **WHEN** a pull request is opened or updated on public GitHub-hosted CI
 - **THEN** CI executes `npm ci`, type checking, unit tests, contract tests, and build without Actual credentials or real-server writes
-
-#### Scenario: Credential sentinel test
-- **WHEN** tests inject a recognizable sentinel as the Actual password and trigger failures
-- **THEN** captured logs and MCP results contain no sentinel value
-
-#### Scenario: Real integration write verification
-- **WHEN** `ACTUAL_INTEGRATION_ALLOW_WRITES=true` is scoped to an explicitly authorized local test process
-- **THEN** integration tests exercise payee CRUD, protected merge, rule CRUD, import-time functional rule execution, negative paths, synchronization, exact-ID cleanup, and permanent-fixture integrity against the configured Actual Server
-
-#### Scenario: Real MCP stdio verification
-- **WHEN** the authorized E2E read/write suites run
-- **THEN** they discover exactly 42 tools and exercise the new operations through a real MCP client, compiled stdio process, official Actual API, and configured Actual Server rather than direct handlers
 
 #### Scenario: Real budget read verification
 - **WHEN** the configured Actual Server is available
@@ -119,19 +64,8 @@ The project SHALL include unit tests for every budget schema, shape, client path
 - **WHEN** the compiled stdio E2E client lists tools
 - **THEN** it discovers exactly 42 tools and exercises budget operations through the MCP client rather than direct handlers
 
-### Requirement: Manual Actual acceptance flow
-The project SHALL retain an explicitly authorized acceptance flow against the configured controlled Actual budget and SHALL automate the v0.3.0 integration and stdio E2E coverage where practical. The flow SHALL cover startup, exact 34-tool discovery, health, all compatible v0.2.0 behaviors, payee administration, rule administration, import-time functional execution, synchronization, cleanup, repeated post-write reads, and permanent-fixture verification. Real-server destructive acceptance MUST NOT run in public CI.
-
-#### Scenario: Controlled end-to-end acceptance
-- **WHEN** an operator supplies test credentials and explicitly enables real writes for the test process
-- **THEN** all required v0.2.0 and v0.3.0 read/write steps complete without corrupting permanent fixture data
-
-#### Scenario: Public CI
-- **WHEN** GitHub Actions runs without Actual credentials or private-network reachability
-- **THEN** it performs no mutation against a real Actual Server
-
 ### Requirement: Per-run ownership and budget cleanup
-Every real integration and E2E write run SHALL create uniquely named temporary budget category groups and categories, record exact returned IDs immediately, and select source and target months dynamically from the official available-month range. Before writing, the suite MUST prove the selected future months contain no protected permanent planning state. Cleanup SHALL restore captured month-level state, clear owned category budget amounts, disable owned carryover, reset only holds created by the run, and then remove temporary entities by exact ID in dependency order. Other run-owned temporary transactions, rules, payees, categories, category groups, and accounts SHALL continue to use unique run identifiers and exact-ID cleanup; permanent fixtures MUST never be registered for mutation or cleanup.
+Every real integration and E2E write run SHALL create uniquely named temporary budget category groups and categories, record exact returned IDs immediately, and select source and target months dynamically from the official available-month range. Before writing, the suite MUST prove the selected future months contain no protected permanent planning state. Cleanup SHALL restore captured month-level state, clear owned category budget amounts, disable owned carryover, reset only holds created by the run, and then remove temporary entities by exact ID in dependency order.
 
 #### Scenario: Safe dynamic month selection
 - **WHEN** a write suite prepares budget test months
@@ -141,32 +75,29 @@ Every real integration and E2E write run SHALL create uniquely named temporary b
 - **WHEN** a real budget write suite completes or fails after creating temporary state
 - **THEN** `finally` cleanup restores captured month-level state, removes owned budget configuration, deletes owned resources by exact ID, and confirms their absence
 
-#### Scenario: Successful cleanup
-- **WHEN** a real write suite completes or fails after creating temporary data
-- **THEN** its `finally` cleanup removes owned resources by exact ID in dependency order and confirms their absence
-
 #### Scenario: Cleanup failure
 - **WHEN** owned budget or entity state cannot be restored or removed
 - **THEN** the suite fails and reports sanitized exact IDs, months, and recovery context without deleting by a global prefix
 
-#### Scenario: Proposed fallback to prefix cleanup
-- **WHEN** exact-ID cleanup is shown during implementation to have disproportionate complexity or execution cost
-- **THEN** implementation pauses and presents evidence, risks, and safeguards for explicit user approval before any prefix-based fallback is introduced
-
 ### Requirement: Permanent fixture integrity
-Real write suites SHALL NOT mutate or delete permanent accounts, category groups, categories, payees, rules, transactions, or monthly budget configuration. Suites SHALL capture stable baseline fingerprints including relevant permanent budget-month shapes before writes and verify after cleanup that every permanent component is unchanged. Temporary resources MUST be excluded only through exact run-owned IDs rather than broad name matching. Permanent payees include `Empresa Teste`, `Supermercado Teste`, `Companhia de Energia Teste`, `Posto Teste`, `Netflix Teste`, `Restaurante Teste`, and `Loja Online Teste`. Integration and E2E suites SHALL own isolated resources and MUST NOT reuse each other's temporary entities.
+Real write suites SHALL NOT mutate or delete permanent accounts, category groups, categories, payees, rules, transactions, or monthly budget configuration. Suites SHALL capture stable baseline fingerprints including relevant permanent budget-month shapes before writes and verify after cleanup that every permanent component is unchanged. Temporary resources MUST be excluded only through exact run-owned IDs rather than broad name matching.
 
 #### Scenario: Post-write integrity check
 - **WHEN** cleanup finishes after an integration or E2E budget write run
 - **THEN** permanent entities, original transactions, and relevant permanent budget configuration fingerprints are identical to baseline
 
-#### Scenario: Leftover temporary data
-- **WHEN** any owned temporary account, category group, category, payee, rule, or transaction remains after cleanup
-- **THEN** the suite fails readiness and reports the leftover resource
-
 #### Scenario: Leftover temporary budget state
 - **WHEN** an owned budget amount, carryover, hold, category, or group remains after cleanup
 - **THEN** the suite fails readiness and reports the leftover state
+
+## REMOVED Requirements
+
+### Requirement: Strict v0.3.0 readiness gate
+**Reason**: The release gate is superseded by the complete v0.4.0 budget-aware gate.
+
+**Migration**: Use `Strict v0.4.0 readiness gate`, which retains every prior verification and adds budget-specific evidence.
+
+## ADDED Requirements
 
 ### Requirement: Strict v0.4.0 readiness gate
 The v0.4.0 release SHALL be declared ready only after typecheck, unit, contract, build, real integration read/write, real stdio E2E read/write and negative tests, repeated post-write reads, budget cleanup and fingerprint verification, backward compatibility, install/update checks, Git hygiene, and secret scans have actually passed. Missing credentials, an unavailable required server, a skipped supported suite, tracking claims without required evidence, failed cleanup, changed fixture, leftover state, or an unexecuted mandatory test SHALL result in `ACTUAL BUDGET MCP v0.4.0 NOT READY`.

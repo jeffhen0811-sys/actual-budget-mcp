@@ -1,12 +1,16 @@
 import { z } from 'zod/v4';
 import {
   batchSchema,
+  budgetMonthSchema,
+  budgetResultLimitSchema,
   boundedTextSchema,
+  DEFAULT_BUDGET_CATEGORY_RESULTS,
   entityNameSchema,
   integerAmountSchema,
   isoDateSchema,
   MAX_DATE_RANGE_DAYS,
-  opaqueIdSchema
+  opaqueIdSchema,
+  positiveIntegerAmountSchema
 } from '../schemas.js';
 
 export const emptyInputSchema = z.object({}).strict().describe('No input is required.');
@@ -20,7 +24,7 @@ export const errorOutputSchema = z.object({
     details: z.record(z.string(), z.unknown()).optional().describe('Safe relationship or refusal details.'),
     recoveryAction: z.string().optional().describe('Safe next operation for partial-state recovery.'),
     entity: z.object({
-      type: z.enum(['account', 'categoryGroup', 'category', 'transaction', 'payee', 'rule']),
+      type: z.enum(['account', 'categoryGroup', 'category', 'transaction', 'payee', 'rule', 'budgetMonth']),
       id: opaqueIdSchema.optional(),
       name: z.string().optional()
     }).strict().optional(),
@@ -168,12 +172,205 @@ export const transactionMutationOutputSchema = z.object({
   transactionId: opaqueIdSchema
 }).strict().describe('Successful synchronized transaction mutation.');
 
+const changedSchema = z.boolean().describe('Whether this call changed persisted Actual state.');
+
+const budgetCategoryCapabilitiesSchema = z.object({
+  budgetAmount: z.boolean().describe('Whether the returned month shape exposes a numeric budgeted field for this category.'),
+  carryover: z.boolean().describe('Whether the returned expense-category shape exposes a boolean carryover field.')
+}).strict();
+
+export const budgetCategorySchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  groupId: opaqueIdSchema,
+  isIncome: z.boolean(),
+  hidden: z.boolean(),
+  budgeted: integerAmountSchema.optional(),
+  spent: integerAmountSchema.optional(),
+  received: integerAmountSchema.optional(),
+  balance: integerAmountSchema.optional(),
+  carryover: z.boolean().optional(),
+  capabilities: budgetCategoryCapabilitiesSchema
+}).strict().describe('Runtime-validated budget category preserving only installed SDK fields and signed values.');
+
+export const budgetGroupSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  isIncome: z.boolean(),
+  hidden: z.boolean(),
+  budgeted: integerAmountSchema.optional(),
+  spent: integerAmountSchema.optional(),
+  received: integerAmountSchema.optional(),
+  balance: integerAmountSchema.optional(),
+  categories: z.array(budgetCategorySchema)
+}).strict().describe('Runtime-validated budget category group.');
+
+const budgetAggregateShape = {
+  incomeAvailable: integerAmountSchema,
+  lastMonthOverspent: integerAmountSchema,
+  forNextMonth: integerAmountSchema,
+  totalBudgeted: integerAmountSchema,
+  toBudget: integerAmountSchema,
+  fromLastMonth: integerAmountSchema,
+  totalIncome: integerAmountSchema,
+  totalSpent: integerAmountSchema,
+  totalBalance: integerAmountSchema
+} as const;
+
+export const budgetMonthOutputSchema = z.object({
+  month: budgetMonthSchema,
+  ...budgetAggregateShape,
+  capabilities: z.object({
+    holdForNextMonth: z.boolean(),
+    incomeBudgeting: z.boolean()
+  }).strict(),
+  categoryGroups: z.array(budgetGroupSchema)
+}).strict().describe('Official monthly budget aggregates and nested validated category projections.');
+
+export const listBudgetMonthsOutputSchema = z.object({
+  months: z.array(budgetMonthSchema),
+  count: z.number().int().nonnegative()
+}).strict().describe('Chronological months available through the official budget API and their exact count.');
+
+export const budgetMonthInputSchema = z.object({ month: budgetMonthSchema }).strict()
+  .describe('One available Actual budget month in strict YYYY-MM form.');
+
+export const budgetSummaryInputSchema = z.object({
+  month: budgetMonthSchema,
+  groupId: opaqueIdSchema.optional(),
+  categoryId: opaqueIdSchema.optional(),
+  limit: budgetResultLimitSchema.optional().default(DEFAULT_BUDGET_CATEGORY_RESULTS)
+}).strict().describe('Budget month with optional group/category detail filters and a bounded category limit.');
+
+export const budgetSummaryOutputSchema = z.object({
+  month: budgetMonthSchema,
+  ...budgetAggregateShape,
+  categoryGroups: z.array(budgetGroupSchema),
+  categoryCount: z.number().int().nonnegative(),
+  omittedCategoryCount: z.number().int().nonnegative()
+}).strict().describe('Official monthly aggregates plus bounded optionally filtered category detail.');
+
+export const setBudgetAmountInputSchema = z.object({
+  month: budgetMonthSchema,
+  categoryId: opaqueIdSchema,
+  amount: integerAmountSchema
+}).strict().describe('Desired signed category budget amount in integer minor units; zero clears planning.');
+
+export const setBudgetCarryoverInputSchema = z.object({
+  month: budgetMonthSchema,
+  categoryId: opaqueIdSchema,
+  carryover: z.boolean()
+}).strict().describe('Desired expense-category carryover state, effective from the selected month forward.');
+
+export const holdBudgetInputSchema = z.object({
+  month: budgetMonthSchema,
+  amount: positiveIntegerAmountSchema
+}).strict().describe('Positive incremental amount to hold for the next month in an envelope budget.');
+
+const budgetMutationBaseShape = {
+  success: z.literal(true),
+  changed: changedSchema,
+  month: budgetMonthSchema,
+  categoryId: opaqueIdSchema
+} as const;
+
+export const budgetAmountMutationOutputSchema = z.object({
+  ...budgetMutationBaseShape,
+  previousAmount: integerAmountSchema,
+  currentAmount: integerAmountSchema,
+  category: budgetCategorySchema
+}).strict().describe('Verified desired-state category budget amount result.');
+
+export const budgetCarryoverMutationOutputSchema = z.object({
+  ...budgetMutationBaseShape,
+  previousCarryover: z.boolean(),
+  currentCarryover: z.boolean(),
+  effectiveFromMonth: budgetMonthSchema,
+  verifiedThroughMonth: budgetMonthSchema,
+  category: budgetCategorySchema
+}).strict().describe('Verified prospective expense carryover result.');
+
+export const budgetHoldOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  month: budgetMonthSchema,
+  requestedAmount: positiveIntegerAmountSchema,
+  officialApplied: z.boolean(),
+  previousForNextMonth: integerAmountSchema,
+  currentForNextMonth: integerAmountSchema
+}).strict().describe('Observed envelope hold result without claiming that the aggregate is exclusively manual hold.');
+
+export const budgetResetHoldOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  month: budgetMonthSchema,
+  previousForNextMonth: integerAmountSchema,
+  currentForNextMonth: integerAmountSchema
+}).strict().describe('Observed aggregate before and after resetting only the manual envelope hold.');
+
+export const copyBudgetInputSchema = z.object({
+  sourceMonth: budgetMonthSchema,
+  targetMonth: budgetMonthSchema,
+  dryRun: z.boolean().optional().default(true),
+  mode: z.enum(['fill-empty', 'overwrite']).optional().default('fill-empty'),
+  includeCarryover: z.boolean().optional().default(false),
+  includeHidden: z.boolean().optional().default(false),
+  confirmOverwrite: z.boolean().optional().default(false),
+  differenceLimit: budgetResultLimitSchema.optional().default(DEFAULT_BUDGET_CATEGORY_RESULTS),
+  maxChanges: budgetResultLimitSchema.optional().default(500)
+}).strict().refine(value => value.sourceMonth !== value.targetMonth, {
+  path: ['targetMonth'], message: 'sourceMonth and targetMonth must be different.'
+}).describe('Bounded budget copy request; defaults to a fill-empty dry run without carryover or hidden categories.');
+
+export const budgetCopyDifferenceSchema = z.object({
+  categoryId: opaqueIdSchema,
+  categoryName: z.string(),
+  groupId: opaqueIdSchema,
+  hidden: z.boolean(),
+  action: z.enum(['set', 'overwrite', 'skip', 'skip-hidden', 'skip-incompatible', 'unchanged']),
+  sourceBudgeted: integerAmountSchema.optional(),
+  targetBudgeted: integerAmountSchema.optional(),
+  sourceCarryover: z.boolean().optional(),
+  targetCarryover: z.boolean().optional(),
+  amountChange: z.boolean(),
+  carryoverChange: z.boolean()
+}).strict();
+
+const budgetCopyCountsSchema = z.object({
+  total: z.number().int().nonnegative(),
+  changes: z.number().int().nonnegative(),
+  set: z.number().int().nonnegative(),
+  overwrite: z.number().int().nonnegative(),
+  skip: z.number().int().nonnegative(),
+  hiddenSkip: z.number().int().nonnegative(),
+  incompatibleSkip: z.number().int().nonnegative(),
+  unchanged: z.number().int().nonnegative()
+}).strict();
+
+export const budgetCopyOutputSchema = z.object({
+  success: z.literal(true),
+  changed: changedSchema,
+  dryRun: z.boolean(),
+  executed: z.boolean(),
+  synchronized: z.boolean(),
+  verified: z.boolean(),
+  sourceMonth: budgetMonthSchema,
+  targetMonth: budgetMonthSchema,
+  mode: z.enum(['fill-empty', 'overwrite']),
+  includeCarryover: z.boolean(),
+  includeHidden: z.boolean(),
+  prospectiveCarryover: z.boolean(),
+  counts: budgetCopyCountsSchema,
+  differences: z.array(budgetCopyDifferenceSchema),
+  omittedDifferenceCount: z.number().int().nonnegative(),
+  attemptedCategoryIds: z.array(opaqueIdSchema),
+  completedCategoryIds: z.array(opaqueIdSchema)
+}).strict().describe('Bounded copy preview or verified sequential execution metadata.');
+
 export const deleteTransactionInputSchema = z.object({
   transactionId: opaqueIdSchema,
   confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
 }).strict().describe('Target transaction and literal destructive confirmation.');
-
-const changedSchema = z.boolean().describe('Whether this call changed persisted Actual state.');
 
 export const createAccountInputSchema = z.object({
   name: entityNameSchema,

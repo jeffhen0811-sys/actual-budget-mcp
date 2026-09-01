@@ -9,6 +9,15 @@ import {
   accountMutationOutputSchema,
   accountOutputSchema,
   accountsOutputSchema,
+  budgetAmountMutationOutputSchema,
+  budgetCarryoverMutationOutputSchema,
+  budgetCopyOutputSchema,
+  budgetHoldOutputSchema,
+  budgetMonthInputSchema,
+  budgetMonthOutputSchema,
+  budgetResetHoldOutputSchema,
+  budgetSummaryInputSchema,
+  budgetSummaryOutputSchema,
   categoryDeletionOutputSchema,
   categoryGroupDeletionOutputSchema,
   categoryGroupMutationOutputSchema,
@@ -21,6 +30,7 @@ import {
   createCategoryInputSchema,
   createPayeeInputSchema,
   createRuleInputSchema,
+  copyBudgetInputSchema,
   deleteAccountInputSchema,
   deleteCategoryGroupInputSchema,
   deleteCategoryInputSchema,
@@ -32,6 +42,8 @@ import {
   healthOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
+  holdBudgetInputSchema,
+  listBudgetMonthsOutputSchema,
   mergePayeesInputSchema,
   moveCategoryInputSchema,
   payeesOutputSchema,
@@ -46,6 +58,8 @@ import {
   ruleOutputSchema,
   rulesOutputSchema,
   syncOutputSchema,
+  setBudgetAmountInputSchema,
+  setBudgetCarryoverInputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema,
   updateAccountInputSchema,
@@ -93,6 +107,14 @@ export interface ToolRuntime {
   createRule: ActualClient['createRule'];
   updateRule: ActualClient['updateRule'];
   deleteRule: ActualClient['deleteRule'];
+  listBudgetMonths: ActualClient['listBudgetMonths'];
+  getBudgetMonth: ActualClient['getBudgetMonth'];
+  getBudgetSummary: ActualClient['getBudgetSummary'];
+  setBudgetAmount: ActualClient['setBudgetAmount'];
+  setBudgetCarryover: ActualClient['setBudgetCarryover'];
+  holdBudgetForNextMonth: ActualClient['holdBudgetForNextMonth'];
+  resetBudgetHold: ActualClient['resetBudgetHold'];
+  copyBudgetMonth: ActualClient['copyBudgetMonth'];
 }
 
 export const TOOL_NAMES = [
@@ -129,7 +151,15 @@ export const TOOL_NAMES = [
   'actual_get_rule',
   'actual_create_rule',
   'actual_update_rule',
-  'actual_delete_rule'
+  'actual_delete_rule',
+  'actual_list_budget_months',
+  'actual_get_budget_month',
+  'actual_get_budget_summary',
+  'actual_set_budget_amount',
+  'actual_set_budget_carryover',
+  'actual_hold_budget_for_next_month',
+  'actual_reset_budget_hold',
+  'actual_copy_budget_month'
 ] as const;
 
 function acceptUnconfirmedForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
@@ -161,8 +191,8 @@ const deleteRuleToolInputSchema = acceptUnconfirmedForStructuredError(deleteRule
 
 export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.3.0' },
-    { instructions: 'Amounts are integer minor units. Use confirmDestructive=true only for an explicitly authorized deletion.' }
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.4.0' },
+    { instructions: 'Amounts are integer minor units and budget months use YYYY-MM. Budget copy defaults to a dry run. Use confirmations only after explicit authorization.' }
   );
 
   server.registerTool(
@@ -190,6 +220,130 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     },
     async () => {
       try { return successResult(await runtime.sync()); } catch (error) { return toolError(error, 'actual_sync', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_list_budget_months',
+    {
+      title: 'List available budget months',
+      description: 'List the chronological months available for official budget queries; availability does not imply configured planning.',
+      inputSchema: emptyInputSchema,
+      outputSchema: listBudgetMonthsOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async () => {
+      try { return successResult(await runtime.listBudgetMonths()); }
+      catch (error) { return toolError(error, 'actual_list_budget_months', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_budget_month',
+    {
+      title: 'Get monthly budget',
+      description: 'Read official signed month aggregates and runtime-validated envelope or tracking category shapes.',
+      inputSchema: budgetMonthInputSchema,
+      outputSchema: budgetMonthOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month }) => {
+      try { return successResult(await runtime.getBudgetMonth(month)); }
+      catch (error) { return toolError(error, 'actual_get_budget_month', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_budget_summary',
+    {
+      title: 'Summarize monthly budget',
+      description: 'Return official signed month aggregates with bounded optional category-group and category detail.',
+      inputSchema: budgetSummaryInputSchema,
+      outputSchema: budgetSummaryOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month, groupId, categoryId, limit }) => {
+      try { return successResult(await runtime.getBudgetSummary(month, {
+        ...(groupId === undefined ? {} : { groupId }),
+        ...(categoryId === undefined ? {} : { categoryId }),
+        limit
+      })); }
+      catch (error) { return toolError(error, 'actual_get_budget_summary', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_set_budget_amount',
+    {
+      title: 'Set category budget amount',
+      description: 'Set and verify a desired signed category planning amount; zero clears the planned amount.',
+      inputSchema: setBudgetAmountInputSchema,
+      outputSchema: budgetAmountMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month, categoryId, amount }) => {
+      try { return successResult(await runtime.setBudgetAmount(month, categoryId, amount)); }
+      catch (error) { return toolError(error, 'actual_set_budget_amount', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_set_budget_carryover',
+    {
+      title: 'Set expense budget carryover',
+      description: 'Set and verify expense-category carryover prospectively from the selected month through later available months.',
+      inputSchema: setBudgetCarryoverInputSchema,
+      outputSchema: budgetCarryoverMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month, categoryId, carryover }) => {
+      try { return successResult(await runtime.setBudgetCarryover(month, categoryId, carryover)); }
+      catch (error) { return toolError(error, 'actual_set_budget_carryover', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_hold_budget_for_next_month',
+    {
+      title: 'Hold budget funds for next month',
+      description: 'Incrementally hold a positive amount in an envelope budget and report the official applied result and observed aggregate.',
+      inputSchema: holdBudgetInputSchema,
+      outputSchema: budgetHoldOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async ({ month, amount }) => {
+      try { return successResult(await runtime.holdBudgetForNextMonth(month, amount)); }
+      catch (error) { return toolError(error, 'actual_hold_budget_for_next_month', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_reset_budget_hold',
+    {
+      title: 'Reset manual budget hold',
+      description: 'Reset only the manual envelope hold and report observed forNextMonth aggregates without attributing automatic holds.',
+      inputSchema: budgetMonthInputSchema,
+      outputSchema: budgetResetHoldOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month }) => {
+      try { return successResult(await runtime.resetBudgetHold(month)); }
+      catch (error) { return toolError(error, 'actual_reset_budget_hold', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_copy_budget_month',
+    {
+      title: 'Preview or copy monthly planning',
+      description: 'Preview by default or sequentially copy bounded category planning with hidden opt-in and confirmed nonzero overwrite protection.',
+      inputSchema: copyBudgetInputSchema,
+      outputSchema: budgetCopyOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true }
+    },
+    async ({ sourceMonth, targetMonth, ...options }) => {
+      try { return successResult(await runtime.copyBudgetMonth(sourceMonth, targetMonth, options)); }
+      catch (error) { return toolError(error, 'actual_copy_budget_month', logger); }
     }
   );
 

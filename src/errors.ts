@@ -22,6 +22,13 @@ export type PublicErrorCode =
   | 'TRANSFER_ACCOUNT_REQUIRED'
   | 'INCOMPATIBLE_CATEGORY_GROUP_TYPE'
   | 'PREFLIGHT_INCONCLUSIVE'
+  | 'BUDGET_MONTH_UNAVAILABLE'
+  | 'UNSUPPORTED_BUDGET_MODE'
+  | 'INCOMPATIBLE_BUDGET_CATEGORY'
+  | 'INVALID_BUDGET_VALUE'
+  | 'OVERWRITE_CONFIRMATION_REQUIRED'
+  | 'BUDGET_VERIFICATION_FAILED'
+  | 'BUDGET_COPY_PARTIAL_STATE'
   | 'MUTATION_FAILED'
   | 'RESULT_TOO_LARGE'
   | 'MUTATION_SYNC_FAILED'
@@ -32,7 +39,7 @@ export type PublicErrorCode =
 export interface PublicErrorMetadata {
   details?: Record<string, unknown>;
   recoveryAction?: string;
-  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction' | 'payee' | 'rule'; id?: string; name?: string };
+  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction' | 'payee' | 'rule' | 'budgetMonth'; id?: string; name?: string };
   state?: 'local_change_may_have_succeeded' | 'synchronized_but_unverified';
   partialState?: boolean;
 }

@@ -1,9 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { PublicBudgetMonth } from '../../src/actual/budget.js';
 import {
   accountsOutputSchema,
   accountDeletionOutputSchema,
   accountMutationOutputSchema,
+  budgetMonthOutputSchema,
+  budgetAmountMutationOutputSchema,
+  budgetCarryoverMutationOutputSchema,
+  budgetCopyOutputSchema,
+  budgetHoldOutputSchema,
+  budgetResetHoldOutputSchema,
   categoryDeletionOutputSchema,
   categoryGroupDeletionOutputSchema,
   categoryGroupMutationOutputSchema,
@@ -11,6 +18,7 @@ import {
   categoriesOutputSchema,
   healthOutputSchema,
   importTransactionsOutputSchema,
+  listBudgetMonthsOutputSchema,
   payeesOutputSchema,
   payeeDeletionOutputSchema,
   payeeMergeOutputSchema,
@@ -30,6 +38,7 @@ import { matchesTemporaryTestPayee, TEMPORARY_TEST_PAYEE } from '../real/ownersh
 import { assertPayeeWriteAllowed } from '../real/ownership.js';
 import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 import { ResourceRegistry } from '../real/resources.js';
+import { selectSafeBudgetTestMonths } from '../real/budget.js';
 
 const TEST_DATE = '2026-08-30';
 const OPENING_RANGE_START = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
@@ -46,6 +55,7 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
   let importedId = '';
   let transactionId = '';
   let baselineFingerprint = '';
+  let budgetCleanup: { categoryId: string; sourceMonth: string; targetMonth: string; holdApplied: boolean } | undefined;
   const registry = new ResourceRegistry();
 
   function fingerprintReader() {
@@ -55,7 +65,10 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       listPayees: async () => (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees,
       listRules: async () => (await callTool(running, 'actual_list_rules', {}, rulesOutputSchema)).rules,
       getTransactions: async (targetAccountId: string, startDate: string, endDate: string) =>
-        (await callTool(running, 'actual_get_transactions', { accountId: targetAccountId, startDate, endDate }, transactionsOutputSchema)).transactions
+        (await callTool(running, 'actual_get_transactions', { accountId: targetAccountId, startDate, endDate }, transactionsOutputSchema)).transactions,
+      listBudgetMonths: async () => callTool(running, 'actual_list_budget_months', {}, listBudgetMonthsOutputSchema),
+      getBudgetMonth: async (month: string) =>
+        await callTool(running, 'actual_get_budget_month', { month }, budgetMonthOutputSchema) as PublicBudgetMonth
     };
   }
 
@@ -103,6 +116,13 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     try {
       if (!running && environment.configured) running = await startMcp(DATA_DIR);
       if (running && accountId && importedId) {
+        if (budgetCleanup) {
+          await callTool(running, 'actual_set_budget_amount', { month: budgetCleanup.sourceMonth, categoryId: budgetCleanup.categoryId, amount: 0 }, budgetAmountMutationOutputSchema);
+          await callTool(running, 'actual_set_budget_amount', { month: budgetCleanup.targetMonth, categoryId: budgetCleanup.categoryId, amount: 0 }, budgetAmountMutationOutputSchema);
+          await callTool(running, 'actual_set_budget_carryover', { month: budgetCleanup.sourceMonth, categoryId: budgetCleanup.categoryId, carryover: false }, budgetCarryoverMutationOutputSchema);
+          if (budgetCleanup.holdApplied) await callTool(running, 'actual_reset_budget_hold', { month: budgetCleanup.sourceMonth }, budgetResetHoldOutputSchema);
+          budgetCleanup = undefined;
+        }
         await registry.cleanup({
           transaction: async resource => { await callTool(running, 'actual_delete_transaction', { transactionId: resource.id, confirmDestructive: true }, transactionMutationOutputSchema); },
           rule: async resource => { await callTool(running, 'actual_delete_rule', { ruleId: resource.id, confirmDestructive: true }, ruleDeletionOutputSchema); },
@@ -384,6 +404,63 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       assertNoConfiguredSecrets(result);
     }
     expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+  });
+
+  it('executes guarded budget writes and copy through compiled MCP stdio with exact cleanup', async () => {
+    const listed = await callTool(running, 'actual_list_budget_months', {}, listBudgetMonthsOutputSchema);
+    const selected = await selectSafeBudgetTestMonths({
+      months: listed.months,
+      getBudgetMonth: async month =>
+        await callTool(running, 'actual_get_budget_month', { month }, budgetMonthOutputSchema) as PublicBudgetMonth
+    });
+    const runId = randomUUID();
+    const group = await callTool(running, 'actual_create_category_group', { name: `MCP_E2E_BUDGET_GROUP_${runId}` }, categoryGroupMutationOutputSchema);
+    registry.register('categoryGroup', group.categoryGroup.id, group.categoryGroup.name);
+    const created = await callTool(running, 'actual_create_category', {
+      name: `MCP_E2E_BUDGET_CATEGORY_${runId}`, groupId: group.categoryGroup.id
+    }, categoryMutationOutputSchema);
+    registry.register('category', created.category.id, created.category.name);
+    budgetCleanup = { categoryId: created.category.id, ...selected, holdApplied: false };
+    try {
+      await callTool(running, 'actual_set_budget_amount', {
+        month: selected.sourceMonth, categoryId: created.category.id, amount: 1234
+      }, budgetAmountMutationOutputSchema);
+      const carryover = await callTool(running, 'actual_set_budget_carryover', {
+        month: selected.sourceMonth, categoryId: created.category.id, carryover: true
+      }, budgetCarryoverMutationOutputSchema);
+      expect(carryover.effectiveFromMonth).toBe(selected.sourceMonth);
+      const preview = await callTool(running, 'actual_copy_budget_month', {
+        sourceMonth: selected.sourceMonth, targetMonth: selected.targetMonth, includeCarryover: true
+      }, budgetCopyOutputSchema);
+      expect(preview).toMatchObject({ dryRun: true, executed: false, changed: true });
+      const copied = await callTool(running, 'actual_copy_budget_month', {
+        sourceMonth: selected.sourceMonth, targetMonth: selected.targetMonth, includeCarryover: true, dryRun: false
+      }, budgetCopyOutputSchema);
+      expect(copied).toMatchObject({ executed: true, synchronized: true, verified: true });
+      expect(await callTool(running, 'actual_copy_budget_month', {
+        sourceMonth: selected.sourceMonth, targetMonth: selected.targetMonth, includeCarryover: true, dryRun: false
+      }, budgetCopyOutputSchema)).toMatchObject({ changed: false, executed: false });
+      expect((await callToolExpectingError(running, 'actual_hold_budget_for_next_month', {
+        month: selected.sourceMonth, amount: 0
+      })).isError).toBe(true);
+      const selectedDetail = await callTool(running, 'actual_get_budget_month', { month: selected.sourceMonth }, budgetMonthOutputSchema);
+      if (selectedDetail.capabilities.holdForNextMonth) {
+        const hold = await callTool(running, 'actual_hold_budget_for_next_month', { month: selected.sourceMonth, amount: 1 }, budgetHoldOutputSchema);
+        budgetCleanup.holdApplied = hold.officialApplied;
+        await callTool(running, 'actual_reset_budget_hold', { month: selected.sourceMonth }, budgetResetHoldOutputSchema);
+        budgetCleanup.holdApplied = false;
+      }
+    } finally {
+      await callTool(running, 'actual_set_budget_amount', { month: selected.sourceMonth, categoryId: created.category.id, amount: 0 }, budgetAmountMutationOutputSchema);
+      await callTool(running, 'actual_set_budget_amount', { month: selected.targetMonth, categoryId: created.category.id, amount: 0 }, budgetAmountMutationOutputSchema);
+      await callTool(running, 'actual_set_budget_carryover', { month: selected.sourceMonth, categoryId: created.category.id, carryover: false }, budgetCarryoverMutationOutputSchema);
+      if (budgetCleanup?.holdApplied) await callTool(running, 'actual_reset_budget_hold', { month: selected.sourceMonth }, budgetResetHoldOutputSchema);
+      budgetCleanup = undefined;
+      await callTool(running, 'actual_delete_category', { categoryId: created.category.id, confirmDestructive: true }, categoryDeletionOutputSchema);
+      registry.release('category', created.category.id);
+      await callTool(running, 'actual_delete_category_group', { groupId: group.categoryGroup.id, confirmDestructive: true }, categoryGroupDeletionOutputSchema);
+      registry.release('categoryGroup', group.categoryGroup.id);
+    }
   });
 
   it('rejects negative payee and rule calls, unavailable tools, and remains safe and operational', async () => {

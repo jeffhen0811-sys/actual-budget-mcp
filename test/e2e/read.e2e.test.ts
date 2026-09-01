@@ -2,8 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TOOL_NAMES } from '../../src/mcp/server.js';
 import {
   accountsOutputSchema,
+  budgetMonthOutputSchema,
+  budgetSummaryOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  listBudgetMonthsOutputSchema,
   payeeOutputSchema,
   payeesOutputSchema,
   ruleOutputSchema,
@@ -28,10 +31,10 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers exactly 34 v0.3.0 tools with strict schemas and structural annotations through stdio', async () => {
+  it('discovers exactly 42 v0.4.0 tools with strict schemas and compatible annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(34);
+    expect(tools).toHaveLength(42);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
@@ -44,6 +47,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       expect(tool?.inputSchema.required).toContain('confirmDestructive');
     }
     expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
+    expect(tools.find(tool => tool.name === 'actual_copy_budget_month')?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
   });
 
   it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
@@ -59,7 +63,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       });
       assertNoConfiguredSecrets(result);
     }
-    expect((await running.client.listTools()).tools).toHaveLength(34);
+    expect((await running.client.listTools()).tools).toHaveLength(42);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
@@ -72,6 +76,17 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     expect((await callTool(running, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups.length).toBeGreaterThan(0);
     const payees = await callTool(running, 'actual_list_payees', {}, payeesOutputSchema);
     expect(payees.payees.map(payee => payee.name)).toEqual(expect.arrayContaining(['Empresa Teste', 'Netflix Teste']));
+  });
+
+  it('reads official budget discovery, month detail, and bounded summaries through compiled stdio', async () => {
+    const listed = await callTool(running, 'actual_list_budget_months', {}, listBudgetMonthsOutputSchema);
+    expect(listed.count).toBe(listed.months.length);
+    const month = listed.months.at(-1)!;
+    const detail = await callTool(running, 'actual_get_budget_month', { month }, budgetMonthOutputSchema);
+    expect(detail.month).toBe(month);
+    const summary = await callTool(running, 'actual_get_budget_summary', { month, limit: 500 }, budgetSummaryOutputSchema);
+    expect(summary.month).toBe(month);
+    expect(summary.totalSpent).toBe(detail.totalSpent);
   });
 
   it('reads individual payees and the complete ranked rule surface through compiled stdio', async () => {

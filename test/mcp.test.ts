@@ -4,6 +4,19 @@ import { createLogger } from '../src/logger.js';
 import { createMcpServer, TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
 import { PublicError } from '../src/errors.js';
 
+const budgetCategoryFixture = {
+  id: 'c1', name: 'Rent', groupId: 'g1', isIncome: false, hidden: false,
+  budgeted: 10000, spent: -9000, balance: 1000, carryover: false,
+  capabilities: { budgetAmount: true, carryover: true }
+};
+const budgetMonthFixture = {
+  month: '2026-08', incomeAvailable: 20000, lastMonthOverspent: -500, forNextMonth: 0,
+  totalBudgeted: 10000, toBudget: 9500, fromLastMonth: 0, totalIncome: 20000,
+  totalSpent: -9000, totalBalance: 1000,
+  capabilities: { holdForNextMonth: true, incomeBudgeting: false },
+  categoryGroups: [{ id: 'g1', name: 'Housing', isIncome: false, hidden: false, budgeted: 10000, spent: -9000, balance: 1000, categories: [budgetCategoryFixture] }]
+};
+
 function fakeRuntime(): ToolRuntime {
   return {
     health: vi.fn().mockResolvedValue({ connected: true, server: 'http://actual.local:5006', budgetLoaded: true, version: '26.7.0' }),
@@ -39,7 +52,38 @@ function fakeRuntime(): ToolRuntime {
     getRule: vi.fn().mockResolvedValue({ id: 'r1', stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'bakery' }], actions: [{ op: 'set', field: 'payee', value: 'p1' }], writable: true }),
     createRule: vi.fn().mockResolvedValue({ success: true, changed: true, rule: { id: 'r2', stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'cafe' }], actions: [{ op: 'set', field: 'payee', value: 'p2' }], writable: true } }),
     updateRule: vi.fn().mockResolvedValue({ success: true, changed: true, rule: { id: 'r1', stage: 'post', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'bakery' }], actions: [{ op: 'set', field: 'payee', value: 'p1' }], writable: true } }),
-    deleteRule: vi.fn().mockResolvedValue({ success: true, deletedRuleId: 'r2' })
+    deleteRule: vi.fn().mockResolvedValue({ success: true, deletedRuleId: 'r2' }),
+    listBudgetMonths: vi.fn().mockResolvedValue({ months: ['2026-08', '2026-09'], count: 2 }),
+    getBudgetMonth: vi.fn().mockResolvedValue(budgetMonthFixture),
+    getBudgetSummary: vi.fn().mockResolvedValue({
+      month: '2026-08', incomeAvailable: 20000, lastMonthOverspent: -500, forNextMonth: 0,
+      totalBudgeted: 10000, toBudget: 9500, fromLastMonth: 0, totalIncome: 20000,
+      totalSpent: -9000, totalBalance: 1000, categoryGroups: budgetMonthFixture.categoryGroups,
+      categoryCount: 1, omittedCategoryCount: 0
+    }),
+    setBudgetAmount: vi.fn().mockResolvedValue({
+      success: true, changed: true, month: '2026-08', categoryId: 'c1', previousAmount: 10000, currentAmount: 12000,
+      category: { ...budgetCategoryFixture, budgeted: 12000 }
+    }),
+    setBudgetCarryover: vi.fn().mockResolvedValue({
+      success: true, changed: true, month: '2026-08', categoryId: 'c1', previousCarryover: false, currentCarryover: true,
+      effectiveFromMonth: '2026-08', verifiedThroughMonth: '2026-09', category: { ...budgetCategoryFixture, carryover: true }
+    }),
+    holdBudgetForNextMonth: vi.fn().mockResolvedValue({
+      success: true, changed: true, month: '2026-08', requestedAmount: 1000, officialApplied: true,
+      previousForNextMonth: 0, currentForNextMonth: 1000
+    }),
+    resetBudgetHold: vi.fn().mockResolvedValue({
+      success: true, changed: true, month: '2026-08', previousForNextMonth: 1000, currentForNextMonth: 0
+    }),
+    copyBudgetMonth: vi.fn().mockResolvedValue({
+      success: true, changed: true, dryRun: true, executed: false, synchronized: false, verified: true,
+      sourceMonth: '2026-08', targetMonth: '2026-09', mode: 'fill-empty', includeCarryover: false, includeHidden: false,
+      prospectiveCarryover: false,
+      counts: { total: 1, changes: 1, set: 1, overwrite: 0, skip: 0, hiddenSkip: 0, incompatibleSkip: 0, unchanged: 0 },
+      differences: [{ categoryId: 'c1', categoryName: 'Rent', groupId: 'g1', hidden: false, action: 'set', sourceBudgeted: 10000, targetBudgeted: 0, amountChange: true, carryoverChange: false }],
+      omittedDifferenceCount: 0, attemptedCategoryIds: [], completedCategoryIds: []
+    })
   };
 }
 
@@ -61,10 +105,11 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly thirty-four tools with accurate annotations and English metadata', async () => {
+  it('registers exactly forty-two tools while preserving the original thirty-four with accurate annotations', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(34);
+    expect(tools).toHaveLength(42);
+    expect(TOOL_NAMES.slice(0, 34)).toHaveLength(34);
     for (const tool of tools) {
       expect(tool.title).toMatch(/^[\x20-\x7E]+$/);
       expect(tool.description).toMatch(/^[\x20-\x7E]+$/);
@@ -86,6 +131,15 @@ describe('MCP server contract', () => {
     for (const name of ['actual_delete_payee', 'actual_merge_payees', 'actual_delete_rule']) {
       expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
     }
+    for (const name of ['actual_list_budget_months', 'actual_get_budget_month', 'actual_get_budget_summary']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+    }
+    expect(tools.find(tool => tool.name === 'actual_hold_budget_for_next_month')?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: false, idempotentHint: false
+    });
+    expect(tools.find(tool => tool.name === 'actual_copy_budget_month')?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: true, idempotentHint: true
+    });
     expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
     expect(tools.some(tool => /reorder|account_group|actualql|generic_crud/i.test(tool.name))).toBe(false);
   });
@@ -132,7 +186,15 @@ describe('MCP server contract', () => {
       { name: 'actual_get_rule', arguments: { ruleId: 'r1' } },
       { name: 'actual_create_rule', arguments: { stage: 'default', conditionsOp: 'and', conditions: [{ field: 'imported_payee', op: 'contains', value: 'cafe' }], actions: [{ op: 'set', field: 'payee', value: 'p2' }] } },
       { name: 'actual_update_rule', arguments: { ruleId: 'r1', stage: 'post' } },
-      { name: 'actual_delete_rule', arguments: { ruleId: 'r2', confirmDestructive: true } }
+      { name: 'actual_delete_rule', arguments: { ruleId: 'r2', confirmDestructive: true } },
+      { name: 'actual_list_budget_months', arguments: {} },
+      { name: 'actual_get_budget_month', arguments: { month: '2026-08' } },
+      { name: 'actual_get_budget_summary', arguments: { month: '2026-08' } },
+      { name: 'actual_set_budget_amount', arguments: { month: '2026-08', categoryId: 'c1', amount: 12000 } },
+      { name: 'actual_set_budget_carryover', arguments: { month: '2026-08', categoryId: 'c1', carryover: true } },
+      { name: 'actual_hold_budget_for_next_month', arguments: { month: '2026-08', amount: 1000 } },
+      { name: 'actual_reset_budget_hold', arguments: { month: '2026-08' } },
+      { name: 'actual_copy_budget_month', arguments: { sourceMonth: '2026-08', targetMonth: '2026-09' } }
     ];
     for (const call of calls) {
       const result = await client.callTool(call);
@@ -225,6 +287,38 @@ describe('MCP server contract', () => {
     expect(runtime.getAccount).not.toHaveBeenCalled();
     expect(runtime.importTransactions).not.toHaveBeenCalled();
     expect(runtime.deleteTransaction).not.toHaveBeenCalled();
+  });
+
+  it('enforces strict budget schemas and returns safe partial-copy verification metadata', async () => {
+    const invalidCalls = [
+      ['actual_get_budget_month', { month: '2026-9' }],
+      ['actual_set_budget_amount', { month: '2026-09', categoryId: 'c1', amount: 1.5 }],
+      ['actual_hold_budget_for_next_month', { month: '2026-09', amount: 0 }],
+      ['actual_copy_budget_month', { sourceMonth: '2026-08', targetMonth: '2026-09', unknown: true }],
+      ['actual_copy_budget_month', { sourceMonth: '2026-08', targetMonth: '2026-08' }]
+    ] as const;
+    for (const [name, args] of invalidCalls) expect((await client.callTool({ name, arguments: args })).isError, name).toBe(true);
+    expect(runtime.getBudgetMonth).not.toHaveBeenCalled();
+    expect(runtime.setBudgetAmount).not.toHaveBeenCalled();
+    expect(runtime.holdBudgetForNextMonth).not.toHaveBeenCalled();
+    expect(runtime.copyBudgetMonth).not.toHaveBeenCalled();
+
+    vi.mocked(runtime.copyBudgetMonth).mockRejectedValue(new PublicError(
+      'BUDGET_COPY_PARTIAL_STATE', 'Copy synchronized but was not verified.', 'actual_copy_budget_month', false,
+      {
+        recoveryAction: 'actual_sync', state: 'synchronized_but_unverified', partialState: true,
+        entity: { type: 'budgetMonth', id: '2026-09' },
+        details: { attemptedCategoryIds: ['c1', 'c2'], completedCategoryIds: ['c1'], failedCategoryId: 'c2' }
+      }
+    ));
+    const partial = await client.callTool({ name: 'actual_copy_budget_month', arguments: {
+      sourceMonth: '2026-08', targetMonth: '2026-09', dryRun: false
+    } });
+    expect(partial.isError).toBe(true);
+    expect(partial.structuredContent).toMatchObject({ error: {
+      code: 'BUDGET_COPY_PARTIAL_STATE', state: 'synchronized_but_unverified', partialState: true,
+      details: { attemptedCategoryIds: ['c1', 'c2'], completedCategoryIds: ['c1'], failedCategoryId: 'c2' }
+    } });
   });
 
   it('passes only allowlisted update fields and requires at least one field', async () => {

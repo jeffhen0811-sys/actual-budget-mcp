@@ -7,6 +7,8 @@ const sdk = vi.hoisted(() => ({
   createCategoryGroup: vi.fn(), updateCategoryGroup: vi.fn(), deleteCategoryGroup: vi.fn(), getCategories: vi.fn(),
   createCategory: vi.fn(), updateCategory: vi.fn(), deleteCategory: vi.fn(), getBudgetMonths: vi.fn(),
   getBudgetMonth: vi.fn(), getPayees: vi.fn(), getTransactions: vi.fn(), importTransactions: vi.fn(),
+  setBudgetAmount: vi.fn(), setBudgetCarryover: vi.fn(), holdBudgetForNextMonth: vi.fn(),
+  resetBudgetHold: vi.fn(), batchBudgetUpdates: vi.fn(),
   createPayee: vi.fn(), updatePayee: vi.fn(), deletePayee: vi.fn(), mergePayees: vi.fn(),
   getPayeeRules: vi.fn(), getRules: vi.fn(), createRule: vi.fn(), updateRule: vi.fn(), deleteRule: vi.fn(),
   updateTransaction: vi.fn(), deleteTransaction: vi.fn()
@@ -94,5 +96,31 @@ describe('Actual 26.8.1 adapter compatibility', () => {
     expect(sdk.createRule).toHaveBeenCalledWith({ stage: null, conditionsOp: 'and', conditions: [], actions: [] });
     expect(sdk.updateRule).toHaveBeenCalledWith(rule);
     expect(sdk.deleteRule).toHaveBeenCalledWith('rule-id');
+  });
+
+  it('forwards all seven installed budget bindings without using batch execution', async () => {
+    const month = {
+      month: '2026-08', incomeAvailable: 0, lastMonthOverspent: 0, forNextMonth: 0, totalBudgeted: 0,
+      toBudget: 0, fromLastMonth: 0, totalIncome: 0, totalSpent: 0, totalBalance: 0, categoryGroups: []
+    };
+    sdk.getBudgetMonths.mockResolvedValue(['2026-08']);
+    sdk.getBudgetMonth.mockResolvedValue(month);
+    sdk.holdBudgetForNextMonth.mockResolvedValue(true);
+    sdk.batchBudgetUpdates.mockImplementation(async action => action());
+    const batched = vi.fn().mockResolvedValue(undefined);
+
+    await expect(actualApiAdapter.getBudgetMonths()).resolves.toEqual(['2026-08']);
+    await expect(actualApiAdapter.getBudgetMonth('2026-08')).resolves.toEqual(month);
+    await actualApiAdapter.setBudgetAmount('2026-08', 'category', -100);
+    await actualApiAdapter.setBudgetCarryover('2026-08', 'category', true);
+    await expect(actualApiAdapter.holdBudgetForNextMonth('2026-08', 100)).resolves.toBe(true);
+    await actualApiAdapter.resetBudgetHold('2026-08');
+    await actualApiAdapter.batchBudgetUpdates(batched);
+
+    expect(sdk.setBudgetAmount).toHaveBeenCalledWith('2026-08', 'category', -100);
+    expect(sdk.setBudgetCarryover).toHaveBeenCalledWith('2026-08', 'category', true);
+    expect(sdk.holdBudgetForNextMonth).toHaveBeenCalledWith('2026-08', 100);
+    expect(sdk.resetBudgetHold).toHaveBeenCalledWith('2026-08');
+    expect(batched).toHaveBeenCalledOnce();
   });
 });

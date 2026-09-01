@@ -13,7 +13,8 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
       'closeAccount', 'reopenAccount', 'deleteAccount', 'getAccountBalance', 'getCategoryGroups',
       'createCategoryGroup', 'updateCategoryGroup', 'deleteCategoryGroup', 'getCategories', 'createCategory',
       'updateCategory', 'deleteCategory', 'getPayees', 'createPayee', 'updatePayee', 'deletePayee',
-      'mergePayees', 'getPayeeRules', 'getRules', 'createRule', 'updateRule', 'deleteRule'
+      'mergePayees', 'getPayeeRules', 'getRules', 'createRule', 'updateRule', 'deleteRule',
+      'setBudgetAmount', 'setBudgetCarryover', 'holdBudgetForNextMonth', 'resetBudgetHold', 'batchBudgetUpdates'
     ]) expect(declarations).toContain(`function ${method}(`);
     expect(models).toContain('balance_current?: number | null');
     expect(models).toContain("Pick<PayeeEntity, 'id' | 'name' | 'transfer_acct'>");
@@ -25,6 +26,10 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     expect(ruleModels).toContain('options?:');
     expect(ruleModels).toContain('tombstone?: boolean');
     expect(declarations).not.toMatch(/function (?:runRules|previewRule)\(/);
+    for (const aggregate of [
+      'incomeAvailable', 'lastMonthOverspent', 'forNextMonth', 'totalBudgeted', 'toBudget',
+      'fromLastMonth', 'totalIncome', 'totalSpent', 'totalBalance'
+    ]) expect(declarations).toContain(`${aggregate}: number`);
   });
 
   it('retains the public unbounded history behavior and known cascade guards', async () => {
@@ -36,6 +41,14 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     expect(implementation).toContain('name: group.name,\n\t\thidden: group.hidden');
     expect(implementation).toContain('name: category.name.trim()');
     expect(implementation).toContain('group.name.toUpperCase()');
+    expect(implementation).toContain('if (isTrackingBudget()) return {');
+    expect(implementation).toContain('budgeted: value(`budget-${cat.id}`)');
+    expect(implementation).toContain('received: value(`sum-amount-${cat.id}`)');
+    expect(implementation).toContain('spent: value(`sum-amount-${cat.id}`)');
+    expect(implementation).toContain('startMonth: month');
+    expect(implementation).toContain('if (amount <= 0) throw APIError("Amount to hold needs to be greater than 0")');
+    expect(implementation).toContain('await send("api/batch-budget-start")');
+    expect(implementation).toContain('await send("api/batch-budget-end")');
   });
 
   it('pins payee merge and rule safety behavior without importing bundle internals in production', async () => {

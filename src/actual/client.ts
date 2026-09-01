@@ -6,7 +6,7 @@ import { mapError, PublicError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { createLogger } from '../logger.js';
 import { errorMessage, redact } from '../redaction.js';
-import { MAX_TRANSACTION_RESULTS } from '../schemas.js';
+import { DEFAULT_BUDGET_CATEGORY_RESULTS, MAX_BUDGET_CATEGORY_RESULTS, MAX_TRANSACTION_RESULTS } from '../schemas.js';
 import type {
   ActualApiAdapter,
   AdapterAccount,
@@ -19,6 +19,16 @@ import type {
   ImportTransaction
 } from './adapter.js';
 import { FifoQueue } from './queue.js';
+import {
+  budgetModeCapability,
+  findBudgetCategory,
+  planBudgetCopy,
+  projectBudgetMonth,
+  type BudgetCopyMode,
+  type PublicBudgetCategory,
+  type PublicBudgetGroup,
+  type PublicBudgetMonth
+} from './budget.js';
 import {
   isWritableRuleAction,
   isWritableRuleCondition,
@@ -259,6 +269,377 @@ export class ActualClient {
         );
       }
       return transactions.map(transaction => this.projectTransaction(transaction));
+    });
+  }
+
+  private validBudgetMonth(value: string): boolean {
+    return /^\d{4}-(0[1-9]|1[0-2])$/.test(value);
+  }
+
+  private async completeBudgetMonths(operation: string): Promise<string[]> {
+    try {
+      const months = await this.api.getBudgetMonths();
+      if (!Array.isArray(months) || months.some(month => typeof month !== 'string' || !this.validBudgetMonth(month))) {
+        throw new Error('Budget month range was malformed.');
+      }
+      return months;
+    } catch (error) {
+      if (error instanceof PublicError) throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The official budget month range could not be verified.', operation, false, undefined, { cause: error });
+    }
+  }
+
+  private async projectedBudgetMonth(month: string, operation: string, availableMonths?: readonly string[]): Promise<PublicBudgetMonth> {
+    if (!this.validBudgetMonth(month)) throw new PublicError('INVALID_BUDGET_VALUE', 'Budget month must use valid YYYY-MM form.', operation, false, {
+      entity: { type: 'budgetMonth', id: month }
+    });
+    const months = availableMonths ?? await this.completeBudgetMonths(operation);
+    if (!months.includes(month)) throw new PublicError('BUDGET_MONTH_UNAVAILABLE', 'The requested month is outside the official available budget range.', operation, false, {
+      entity: { type: 'budgetMonth', id: month }, details: { month }
+    });
+    try {
+      const projected = projectBudgetMonth(await this.api.getBudgetMonth(month));
+      if (projected.month !== month) throw new Error('Budget month identity did not match the request.');
+      return projected;
+    } catch (error) {
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'Actual returned an incomplete or unsupported budget month shape.', operation, false, {
+        entity: { type: 'budgetMonth', id: month }
+      }, { cause: error });
+    }
+  }
+
+  private requireBudgetCategory(month: PublicBudgetMonth, categoryId: string, operation: string): PublicBudgetCategory {
+    const category = findBudgetCategory(month, categoryId);
+    if (!category) throw new PublicError('NOT_FOUND', 'The requested category was not found in the budget month.', operation, false, {
+      entity: { type: 'category', id: categoryId }, details: { month: month.month }
+    });
+    return category;
+  }
+
+  listBudgetMonths(): Promise<{ months: string[]; count: number }> {
+    const operation = 'actual_list_budget_months';
+    return this.run(operation, async () => {
+      const months = await this.completeBudgetMonths(operation);
+      return { months, count: months.length };
+    });
+  }
+
+  getBudgetMonth(month: string): Promise<PublicBudgetMonth> {
+    const operation = 'actual_get_budget_month';
+    return this.run(operation, async () => this.projectedBudgetMonth(month, operation));
+  }
+
+  getBudgetSummary(
+    month: string,
+    filters: { groupId?: string; categoryId?: string; limit?: number } = {}
+  ) {
+    const operation = 'actual_get_budget_summary';
+    return this.run(operation, async () => {
+      const projected = await this.projectedBudgetMonth(month, operation);
+      const limit = filters.limit ?? DEFAULT_BUDGET_CATEGORY_RESULTS;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_BUDGET_CATEGORY_RESULTS) {
+        throw new PublicError('INVALID_BUDGET_VALUE', `Budget detail limit must be between 1 and ${MAX_BUDGET_CATEGORY_RESULTS}.`, operation, false);
+      }
+      let groups = projected.categoryGroups;
+      if (filters.groupId !== undefined) {
+        if (!groups.some(group => group.id === filters.groupId)) throw new PublicError('NOT_FOUND', 'The requested category group was not found in the budget month.', operation, false, {
+          entity: { type: 'categoryGroup', id: filters.groupId }, details: { month }
+        });
+        groups = groups.filter(group => group.id === filters.groupId);
+      }
+      if (filters.categoryId !== undefined && !groups.some(group => group.categories.some(category => category.id === filters.categoryId))) {
+        throw new PublicError('NOT_FOUND', 'The requested category was not found in the selected budget detail.', operation, false, {
+          entity: { type: 'category', id: filters.categoryId }, details: { month }
+        });
+      }
+      const filtered = groups.map(group => ({
+        ...group,
+        categories: filters.categoryId === undefined ? group.categories : group.categories.filter(category => category.id === filters.categoryId)
+      })).filter(group => group.categories.length > 0);
+      const categoryCount = filtered.reduce((count, group) => count + group.categories.length, 0);
+      let remaining = limit;
+      const bounded: PublicBudgetGroup[] = [];
+      for (const group of filtered) {
+        if (remaining === 0) break;
+        const categories = group.categories.slice(0, remaining);
+        remaining -= categories.length;
+        if (categories.length > 0) bounded.push({ ...group, categories });
+      }
+      return {
+        month: projected.month,
+        incomeAvailable: projected.incomeAvailable,
+        lastMonthOverspent: projected.lastMonthOverspent,
+        forNextMonth: projected.forNextMonth,
+        totalBudgeted: projected.totalBudgeted,
+        toBudget: projected.toBudget,
+        fromLastMonth: projected.fromLastMonth,
+        totalIncome: projected.totalIncome,
+        totalSpent: projected.totalSpent,
+        totalBalance: projected.totalBalance,
+        categoryGroups: bounded,
+        categoryCount,
+        omittedCategoryCount: Math.max(0, categoryCount - limit)
+      };
+    });
+  }
+
+  private async synchronizeBudgetMutation<T>(
+    operation: string,
+    entity: { type: 'category' | 'budgetMonth'; id: string; name?: string },
+    verify: () => Promise<T>
+  ): Promise<T> {
+    try {
+      await this.api.sync();
+    } catch (error) {
+      throw new PublicError('MUTATION_SYNC_FAILED', 'The budget change may have succeeded locally, but synchronization failed. Run actual_sync and read the affected month before another mutation.', operation, false, {
+        recoveryAction: 'actual_sync', entity, state: 'local_change_may_have_succeeded', partialState: true
+      }, { cause: error });
+    }
+    try {
+      return await verify();
+    } catch (error) {
+      if (error instanceof PublicError && error.code === 'BUDGET_VERIFICATION_FAILED') throw error;
+      throw new PublicError('BUDGET_VERIFICATION_FAILED', 'The budget change synchronized, but its persisted state could not be verified.', operation, false, {
+        recoveryAction: 'actual_sync', entity, state: 'synchronized_but_unverified', partialState: true
+      }, { cause: error });
+    }
+  }
+
+  setBudgetAmount(month: string, categoryId: string, amount: number) {
+    const operation = 'actual_set_budget_amount';
+    return this.run(operation, async () => {
+      if (!Number.isSafeInteger(amount)) throw new PublicError('INVALID_BUDGET_VALUE', 'Budget amount must be a safe integer in minor units.', operation, false);
+      const months = await this.completeBudgetMonths(operation);
+      const beforeMonth = await this.projectedBudgetMonth(month, operation, months);
+      const before = this.requireBudgetCategory(beforeMonth, categoryId, operation);
+      if (!before.capabilities.budgetAmount || typeof before.budgeted !== 'number') throw new PublicError(
+        'INCOMPATIBLE_BUDGET_CATEGORY',
+        'The returned month shape does not prove that this category supports budget amounts.',
+        operation,
+        false,
+        { entity: { type: 'category', id: before.id, name: before.name }, details: { month, isIncome: before.isIncome } }
+      );
+      if (before.budgeted === amount) return {
+        success: true as const, changed: false, month, categoryId, previousAmount: before.budgeted, currentAmount: before.budgeted, category: before
+      };
+      try { await this.api.setBudgetAmount(month, categoryId, amount); }
+      catch (error) { throw new PublicError('MUTATION_FAILED', 'Actual rejected the budget amount mutation.', operation, false, {
+        entity: { type: 'category', id: before.id, name: before.name }, details: { month }
+      }, { cause: error }); }
+      const after = await this.synchronizeBudgetMutation(operation, { type: 'category', id: before.id, name: before.name }, async () => {
+        const category = this.requireBudgetCategory(await this.projectedBudgetMonth(month, operation, months), categoryId, operation);
+        if (category.budgeted !== amount) throw new Error('Persisted budget amount did not match the desired value.');
+        return category;
+      });
+      return { success: true as const, changed: true, month, categoryId, previousAmount: before.budgeted, currentAmount: amount, category: after };
+    });
+  }
+
+  setBudgetCarryover(month: string, categoryId: string, carryover: boolean) {
+    const operation = 'actual_set_budget_carryover';
+    return this.run(operation, async () => {
+      const months = await this.completeBudgetMonths(operation);
+      const start = months.indexOf(month);
+      if (start < 0) await this.projectedBudgetMonth(month, operation, months);
+      const affectedMonths = months.slice(start);
+      const beforeStates: Array<{ month: string; category: PublicBudgetCategory }> = [];
+      for (const affectedMonth of affectedMonths) {
+        const category = this.requireBudgetCategory(await this.projectedBudgetMonth(affectedMonth, operation, months), categoryId, operation);
+        if (category.isIncome || !category.capabilities.carryover || typeof category.carryover !== 'boolean') throw new PublicError(
+          'INCOMPATIBLE_BUDGET_CATEGORY',
+          'Carryover is supported only for expense categories with an observed carryover field.',
+          operation,
+          false,
+          { entity: { type: 'category', id: category.id, name: category.name }, details: { month: affectedMonth, isIncome: category.isIncome } }
+        );
+        beforeStates.push({ month: affectedMonth, category });
+      }
+      const before = beforeStates[0]!;
+      const verifiedThroughMonth = affectedMonths.at(-1) ?? month;
+      if (beforeStates.every(state => state.category.carryover === carryover)) return {
+        success: true as const, changed: false, month, categoryId, previousCarryover: before.category.carryover!, currentCarryover: carryover,
+        effectiveFromMonth: month, verifiedThroughMonth, category: before.category
+      };
+      try { await this.api.setBudgetCarryover(month, categoryId, carryover); }
+      catch (error) { throw new PublicError('MUTATION_FAILED', 'Actual rejected the prospective carryover mutation.', operation, false, {
+        entity: { type: 'category', id: before.category.id, name: before.category.name }, details: { effectiveFromMonth: month }
+      }, { cause: error }); }
+      const after = await this.synchronizeBudgetMutation(operation, { type: 'category', id: before.category.id, name: before.category.name }, async () => {
+        let selected: PublicBudgetCategory | undefined;
+        for (const affectedMonth of affectedMonths) {
+          const category = this.requireBudgetCategory(await this.projectedBudgetMonth(affectedMonth, operation, months), categoryId, operation);
+          if (category.carryover !== carryover) throw new Error('Prospective carryover did not persist through the available range.');
+          if (affectedMonth === month) selected = category;
+        }
+        if (!selected) throw new Error('Selected carryover month could not be verified.');
+        return selected;
+      });
+      return {
+        success: true as const, changed: true, month, categoryId, previousCarryover: before.category.carryover!, currentCarryover: carryover,
+        effectiveFromMonth: month, verifiedThroughMonth, category: after
+      };
+    });
+  }
+
+  holdBudgetForNextMonth(month: string, amount: number) {
+    const operation = 'actual_hold_budget_for_next_month';
+    return this.run(operation, async () => {
+      if (!Number.isSafeInteger(amount) || amount <= 0) throw new PublicError('INVALID_BUDGET_VALUE', 'Hold amount must be a positive safe integer. Use actual_reset_budget_hold to remove a manual hold.', operation, false);
+      const months = await this.completeBudgetMonths(operation);
+      const before = await this.projectedBudgetMonth(month, operation, months);
+      if (budgetModeCapability(before) !== 'envelope') throw new PublicError('UNSUPPORTED_BUDGET_MODE', 'Holding funds is supported only when the returned month shape proves envelope-budget behavior.', operation, false, {
+        entity: { type: 'budgetMonth', id: month }
+      });
+      let applied: boolean;
+      try { applied = await this.api.holdBudgetForNextMonth(month, amount); }
+      catch (error) { throw new PublicError('MUTATION_FAILED', 'Actual rejected the incremental budget hold.', operation, false, {
+        entity: { type: 'budgetMonth', id: month }
+      }, { cause: error }); }
+      if (!applied) return {
+        success: true as const, changed: false, month, requestedAmount: amount, officialApplied: false,
+        previousForNextMonth: before.forNextMonth, currentForNextMonth: before.forNextMonth
+      };
+      const after = await this.synchronizeBudgetMutation(operation, { type: 'budgetMonth', id: month }, async () => {
+        const persisted = await this.projectedBudgetMonth(month, operation, months);
+        if (persisted.forNextMonth === before.forNextMonth) throw new Error('Applied hold did not change the observed next-month aggregate.');
+        return persisted;
+      });
+      return {
+        success: true as const, changed: true, month, requestedAmount: amount, officialApplied: true,
+        previousForNextMonth: before.forNextMonth, currentForNextMonth: after.forNextMonth
+      };
+    });
+  }
+
+  resetBudgetHold(month: string) {
+    const operation = 'actual_reset_budget_hold';
+    return this.run(operation, async () => {
+      const months = await this.completeBudgetMonths(operation);
+      const before = await this.projectedBudgetMonth(month, operation, months);
+      if (budgetModeCapability(before) !== 'envelope') throw new PublicError('UNSUPPORTED_BUDGET_MODE', 'Resetting a manual hold is supported only when the returned month shape proves envelope-budget behavior.', operation, false, {
+        entity: { type: 'budgetMonth', id: month }
+      });
+      try { await this.api.resetBudgetHold(month); }
+      catch (error) { throw new PublicError('MUTATION_FAILED', 'Actual rejected the manual budget-hold reset.', operation, false, {
+        entity: { type: 'budgetMonth', id: month }
+      }, { cause: error }); }
+      const after = await this.synchronizeBudgetMutation(operation, { type: 'budgetMonth', id: month }, async () =>
+        this.projectedBudgetMonth(month, operation, months));
+      return {
+        success: true as const,
+        changed: before.forNextMonth !== after.forNextMonth,
+        month,
+        previousForNextMonth: before.forNextMonth,
+        currentForNextMonth: after.forNextMonth
+      };
+    });
+  }
+
+  copyBudgetMonth(sourceMonth: string, targetMonth: string, options: {
+    dryRun?: boolean;
+    mode?: BudgetCopyMode;
+    includeCarryover?: boolean;
+    includeHidden?: boolean;
+    confirmOverwrite?: boolean;
+    differenceLimit?: number;
+    maxChanges?: number;
+  } = {}) {
+    const operation = 'actual_copy_budget_month';
+    return this.run(operation, async () => {
+      if (sourceMonth === targetMonth) throw new PublicError('INVALID_BUDGET_VALUE', 'Source and target budget months must be different.', operation, false);
+      const dryRun = options.dryRun ?? true;
+      const mode = options.mode ?? 'fill-empty';
+      const includeCarryover = options.includeCarryover ?? false;
+      const includeHidden = options.includeHidden ?? false;
+      const confirmOverwrite = options.confirmOverwrite ?? false;
+      const differenceLimit = options.differenceLimit ?? DEFAULT_BUDGET_CATEGORY_RESULTS;
+      const maxChanges = options.maxChanges ?? MAX_BUDGET_CATEGORY_RESULTS;
+      if (!['fill-empty', 'overwrite'].includes(mode) || !Number.isSafeInteger(differenceLimit) || differenceLimit < 1 || differenceLimit > MAX_BUDGET_CATEGORY_RESULTS ||
+          !Number.isSafeInteger(maxChanges) || maxChanges < 1 || maxChanges > MAX_BUDGET_CATEGORY_RESULTS) {
+        throw new PublicError('INVALID_BUDGET_VALUE', 'Budget copy mode or bounds are invalid.', operation, false);
+      }
+      const months = await this.completeBudgetMonths(operation);
+      const source = await this.projectedBudgetMonth(sourceMonth, operation, months);
+      const target = await this.projectedBudgetMonth(targetMonth, operation, months);
+      const plan = planBudgetCopy({ source, target, mode, includeCarryover, includeHidden, differenceLimit });
+      const { actionable, ...publicPlan } = plan;
+      if (plan.counts.changes > maxChanges) throw new PublicError('RESULT_TOO_LARGE', `The copy would change more than ${maxChanges} categories.`, operation, false, {
+        details: { sourceMonth, targetMonth, changeCount: plan.counts.changes, maxChanges }
+      });
+      if (!dryRun && plan.counts.overwrite > 0 && !confirmOverwrite) throw new PublicError(
+        'OVERWRITE_CONFIRMATION_REQUIRED',
+        'Set confirmOverwrite to true only after reviewing the nonzero overwrite preview.',
+        operation,
+        false,
+        { entity: { type: 'budgetMonth', id: targetMonth }, details: { overwriteCount: plan.counts.overwrite, preview: publicPlan } }
+      );
+      const base = {
+        success: true as const,
+        changed: actionable.length > 0,
+        dryRun,
+        executed: false,
+        synchronized: false,
+        verified: true,
+        ...publicPlan,
+        attemptedCategoryIds: [] as string[],
+        completedCategoryIds: [] as string[]
+      };
+      if (dryRun || actionable.length === 0) return base;
+
+      const attemptedCategoryIds: string[] = [];
+      const completedCategoryIds: string[] = [];
+      const originalTargets = Object.fromEntries(actionable.map(item => [item.categoryId, {
+        ...(item.targetBudgeted === undefined ? {} : { budgeted: item.targetBudgeted }),
+        ...(item.targetCarryover === undefined ? {} : { carryover: item.targetCarryover })
+      }]));
+      const partialError = (message: string, state: 'local_change_may_have_succeeded' | 'synchronized_but_unverified', failedCategoryId?: string, cause?: unknown) =>
+        new PublicError('BUDGET_COPY_PARTIAL_STATE', message, operation, false, {
+          recoveryAction: 'actual_sync',
+          entity: { type: 'budgetMonth', id: targetMonth },
+          state,
+          partialState: true,
+          details: {
+            sourceMonth,
+            targetMonth,
+            attemptedCategoryIds: [...attemptedCategoryIds],
+            completedCategoryIds: [...completedCategoryIds],
+            ...(failedCategoryId === undefined ? {} : { failedCategoryId }),
+            originalTargets,
+            recovery: 'Synchronize and read the target month before deciding on recovery; do not replay automatically.'
+          }
+        }, cause === undefined ? undefined : { cause });
+
+      for (const item of actionable) {
+        attemptedCategoryIds.push(item.categoryId);
+        try {
+          if (item.amountChange && item.sourceBudgeted !== undefined) await this.api.setBudgetAmount(targetMonth, item.categoryId, item.sourceBudgeted);
+          if (item.carryoverChange && item.sourceCarryover !== undefined) await this.api.setBudgetCarryover(targetMonth, item.categoryId, item.sourceCarryover);
+          completedCategoryIds.push(item.categoryId);
+        } catch (error) {
+          try { await this.api.sync(); }
+          catch (syncError) { throw partialError('Budget copy stopped during local execution and synchronization also failed.', 'local_change_may_have_succeeded', item.categoryId, syncError); }
+          throw partialError('Budget copy stopped during local execution after synchronization; inspect the target month before recovery.', 'synchronized_but_unverified', item.categoryId, error);
+        }
+      }
+      try { await this.api.sync(); }
+      catch (error) { throw partialError('Budget copy local changes may have succeeded, but synchronization failed.', 'local_change_may_have_succeeded', undefined, error); }
+      try {
+        const persisted = await this.projectedBudgetMonth(targetMonth, operation, months);
+        for (const item of actionable) {
+          const category = this.requireBudgetCategory(persisted, item.categoryId, operation);
+          if (item.amountChange && category.budgeted !== item.sourceBudgeted) throw new Error(`Budget amount verification failed for ${item.categoryId}.`);
+          if (item.carryoverChange && category.carryover !== item.sourceCarryover) throw new Error(`Carryover verification failed for ${item.categoryId}.`);
+        }
+      } catch (error) {
+        throw partialError('Budget copy synchronized, but complete read-back verification failed.', 'synchronized_but_unverified', undefined, error);
+      }
+      return {
+        ...base,
+        executed: true,
+        synchronized: true,
+        attemptedCategoryIds,
+        completedCategoryIds
+      };
     });
   }
 

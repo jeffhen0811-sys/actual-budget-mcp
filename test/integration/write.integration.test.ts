@@ -15,6 +15,7 @@ import { matchesTemporaryTestPayee, TEMPORARY_TEST_PAYEE } from '../real/ownersh
 import { assertPayeeWriteAllowed } from '../real/ownership.js';
 import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 import { ResourceRegistry } from '../real/resources.js';
+import { selectSafeBudgetTestMonths } from '../real/budget.js';
 
 const TEST_DATE = '2026-08-30';
 const environment = await loadRealTestEnvironment();
@@ -28,6 +29,7 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
   let importedId = '';
   let transactionId = '';
   let baselineFingerprint = '';
+  let budgetCleanup: { categoryId: string; sourceMonth: string; targetMonth: string; holdApplied: boolean } | undefined;
   const registry = new ResourceRegistry();
 
   async function currentTransactions() {
@@ -67,6 +69,13 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
     let cleanupError: unknown;
     try {
       if (client && accountId && importedId) {
+        if (budgetCleanup) {
+          await client.setBudgetAmount(budgetCleanup.sourceMonth, budgetCleanup.categoryId, 0);
+          await client.setBudgetAmount(budgetCleanup.targetMonth, budgetCleanup.categoryId, 0);
+          await client.setBudgetCarryover(budgetCleanup.sourceMonth, budgetCleanup.categoryId, false);
+          if (budgetCleanup.holdApplied) await client.resetBudgetHold(budgetCleanup.sourceMonth);
+          budgetCleanup = undefined;
+        }
         await registry.cleanup({
           transaction: async resource => { await client.deleteTransaction(resource.id); },
           rule: async resource => { await client.deleteRule(resource.id, true); },
@@ -279,6 +288,54 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
     expect(transfer).toBeDefined();
     await expect(client.updatePayee(transfer!.id, 'Must Not Rename')).rejects.toMatchObject({ code: 'TRANSFER_PAYEE_PROTECTED' });
     await expect(client.health()).resolves.toMatchObject({ connected: true, budgetLoaded: true });
+  });
+
+  it('uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes', async () => {
+    const selected = await selectSafeBudgetTestMonths({
+      months: (await client.listBudgetMonths()).months,
+      getBudgetMonth: month => client.getBudgetMonth(month)
+    });
+    const runId = randomUUID();
+    const group = await client.createCategoryGroup(`MCP_INTEGRATION_BUDGET_GROUP_${runId}`);
+    registry.register('categoryGroup', group.categoryGroup.id, group.categoryGroup.name);
+    const created = await client.createCategory(`MCP_INTEGRATION_BUDGET_CATEGORY_${runId}`, group.categoryGroup.id);
+    registry.register('category', created.category.id, created.category.name);
+    budgetCleanup = { categoryId: created.category.id, ...selected, holdApplied: false };
+    try {
+      await expect(client.setBudgetAmount(selected.sourceMonth, created.category.id, 1234)).resolves.toMatchObject({ changed: true, currentAmount: 1234 });
+      await expect(client.setBudgetAmount(selected.sourceMonth, created.category.id, 0)).resolves.toMatchObject({ changed: true, currentAmount: 0 });
+      await expect(client.setBudgetAmount(selected.sourceMonth, created.category.id, -5)).resolves.toMatchObject({ changed: true, currentAmount: -5 });
+      await expect(client.setBudgetAmount(selected.sourceMonth, created.category.id, 1234)).resolves.toMatchObject({ changed: true, currentAmount: 1234 });
+      await expect(client.setBudgetCarryover(selected.sourceMonth, created.category.id, true)).resolves.toMatchObject({
+        changed: true, effectiveFromMonth: selected.sourceMonth
+      });
+      const preview = await client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { includeCarryover: true });
+      expect(preview).toMatchObject({ dryRun: true, executed: false, changed: true });
+      const copied = await client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { dryRun: false, includeCarryover: true });
+      expect(copied).toMatchObject({ executed: true, synchronized: true, verified: true });
+      await expect(client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { dryRun: false, includeCarryover: true }))
+        .resolves.toMatchObject({ changed: false, executed: false });
+      await expect(client.copyBudgetMonth(selected.sourceMonth, selected.sourceMonth)).rejects.toMatchObject({ code: 'INVALID_BUDGET_VALUE' });
+      await expect(client.holdBudgetForNextMonth(selected.sourceMonth, 0)).rejects.toMatchObject({ code: 'INVALID_BUDGET_VALUE' });
+      const selectedMonth = await client.getBudgetMonth(selected.sourceMonth);
+      if (selectedMonth.capabilities.holdForNextMonth) {
+        const hold = await client.holdBudgetForNextMonth(selected.sourceMonth, 1);
+        budgetCleanup.holdApplied = hold.officialApplied;
+        expect(hold.requestedAmount).toBe(1);
+        await expect(client.resetBudgetHold(selected.sourceMonth)).resolves.toMatchObject({ success: true });
+        budgetCleanup.holdApplied = false;
+      }
+    } finally {
+      await client.setBudgetAmount(selected.sourceMonth, created.category.id, 0);
+      await client.setBudgetAmount(selected.targetMonth, created.category.id, 0);
+      await client.setBudgetCarryover(selected.sourceMonth, created.category.id, false);
+      if (budgetCleanup?.holdApplied) await client.resetBudgetHold(selected.sourceMonth);
+      budgetCleanup = undefined;
+      await client.deleteCategory(created.category.id);
+      registry.release('category', created.category.id);
+      await client.deleteCategoryGroup(group.categoryGroup.id);
+      registry.release('categoryGroup', group.categoryGroup.id);
+    }
   });
 
   it('administers isolated account and category structure with exact-ID cleanup and complete safety preflights', async () => {

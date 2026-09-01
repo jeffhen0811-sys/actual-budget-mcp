@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.4.0 - 2026-09-01
+
+### Added
+
+- Eight budget tools for official month discovery, month detail, bounded summaries, verified amount/carryover writes, envelope hold/reset, and guarded month copy.
+- Runtime-validated envelope and tracking projections that preserve official signed aggregates, hidden state, nullability/absence, and shape-proven category capabilities.
+- Dry-run-first `fill-empty` and confirmed `overwrite` copy planning with hidden opt-in, optional prospective carryover, bounded differences, sequential verification, and partial-state metadata.
+- Sanitized installed-contract fixtures, budget-aware real integration and compiled stdio E2E coverage, dynamic safe-month selection, exact cleanup, and permanent planning fingerprints.
+
+### Changed
+
+- Expanded the exact compatible MCP surface from 34 to 42 tools while preserving every v0.3.0 name, strict schema, annotation, and output contract.
+- Package, lockfile, server metadata, documentation, and Docker examples now report 0.4.0 while `@actual-app/api` remains pinned exactly at 26.8.1.
+- Real write suites now refuse protected future planning state and restore owned budget amounts, carryover, holds, categories, and groups before fingerprint verification.
+
+### Fixed
+
+- Prevented envelope income budgeting, tracking hold emulation, same-month copies, hidden-category copying by default, and unconfirmed nonzero overwrites.
+- Prevented copy batching from being presented as transactional; partial local, sync, and post-sync verification outcomes now remain distinguishable and non-retryable.
+- Prevented fabricated budget aggregates, sign normalization, implicit hold resets, copied transaction activity, and automatic mutation replay.
+
 ## 0.3.0 - 2026-08-30
 
 ### Added

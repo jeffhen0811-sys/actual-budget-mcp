@@ -3,9 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActualClient } from '../../src/actual/client.js';
+import type { AdapterBudgetMonth } from '../../src/actual/adapter.js';
+import { projectBudgetMonth } from '../../src/actual/budget.js';
 import type { ActualConfig } from '../../src/config.js';
 import {
   accountSchema,
+  budgetMonthOutputSchema,
   administeredPayeeSchema,
   administeredCategoryGroupSchema,
   administeredCategorySchema,
@@ -21,6 +24,37 @@ const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
 
 describe('Actual data contracts observed through @actual-app/api', () => {
+  it('pins sanitized envelope and tracking monthly budget variants without personal values', () => {
+    const base = {
+      month: '2026-09', incomeAvailable: 1000, lastMonthOverspent: -100, forNextMonth: 0,
+      totalBudgeted: 900, toBudget: 0, fromLastMonth: -100, totalIncome: 1000, totalSpent: -800, totalBalance: 100
+    };
+    const expense = {
+      id: 'expense', name: 'Expense', group_id: 'expense-group', is_income: false, hidden: true,
+      budgeted: 900, spent: -800, balance: 100, carryover: true
+    };
+    const envelope: AdapterBudgetMonth = { ...base, categoryGroups: [
+      { id: 'expense-group', name: 'Expenses', is_income: false, hidden: false, budgeted: 900, spent: -800, balance: 100, categories: [expense] },
+      { id: 'income-group', name: 'Income', is_income: true, hidden: false, received: 1000, categories: [
+        { id: 'income', name: 'Income', group_id: 'income-group', is_income: true, hidden: false, received: 1000 }
+      ] }
+    ] };
+    const tracking: AdapterBudgetMonth = structuredClone(envelope);
+    tracking.categoryGroups[1] = {
+      id: 'income-group', name: 'Income', is_income: true, hidden: false, budgeted: 1000, received: 1000, balance: 0,
+      categories: [{
+        id: 'income', name: 'Income', group_id: 'income-group', is_income: true, hidden: false,
+        budgeted: 1000, received: 1000, balance: 0, carryover: false
+      }]
+    };
+    const projectedEnvelope = projectBudgetMonth(envelope);
+    const projectedTracking = projectBudgetMonth(tracking);
+    expect(() => budgetMonthOutputSchema.parse(projectedEnvelope)).not.toThrow();
+    expect(() => budgetMonthOutputSchema.parse(projectedTracking)).not.toThrow();
+    expect(projectedEnvelope.capabilities).toEqual({ holdForNextMonth: true, incomeBudgeting: false });
+    expect(projectedTracking.capabilities).toEqual({ holdForNextMonth: false, incomeBudgeting: true });
+    expect(projectedEnvelope.categoryGroups[0]!.categories[0]).toMatchObject({ hidden: true, spent: -800, carryover: true });
+  });
   it('accepts Actual payee title-casing only when imported_payee remains the exact test sentinel', () => {
     expect(matchesTemporaryTestPayee('Mcp Integration Test', 'MCP INTEGRATION TEST')).toBe(true);
     expect(matchesTemporaryTestPayee('Mcp Integration Test', 'different-imported-payee')).toBe(false);

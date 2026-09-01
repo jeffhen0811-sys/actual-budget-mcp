@@ -42,10 +42,20 @@ export interface AdapterTransaction {
   subtransactions?: AdapterTransaction[];
 }
 export interface AdapterBudgetCategory extends Record<string, unknown> {
-  id?: unknown; budgeted?: unknown; carryover?: unknown;
+  id?: unknown; name?: unknown; group_id?: unknown; is_income?: unknown; hidden?: unknown;
+  budgeted?: unknown; spent?: unknown; received?: unknown; balance?: unknown; carryover?: unknown;
 }
 export interface AdapterBudgetMonth {
   month: string;
+  incomeAvailable?: unknown;
+  lastMonthOverspent?: unknown;
+  forNextMonth?: unknown;
+  totalBudgeted?: unknown;
+  toBudget?: unknown;
+  fromLastMonth?: unknown;
+  totalIncome?: unknown;
+  totalSpent?: unknown;
+  totalBalance?: unknown;
   categoryGroups: Array<Record<string, unknown> & { categories?: AdapterBudgetCategory[] }>;
 }
 export interface ImportTransaction {
@@ -77,6 +87,11 @@ export interface ActualApiAdapter {
   getAllTransactions(accountId: string): Promise<AdapterTransaction[]>;
   getBudgetMonths(): Promise<string[]>;
   getBudgetMonth(month: string): Promise<AdapterBudgetMonth>;
+  setBudgetAmount(month: string, categoryId: string, value: number): Promise<void>;
+  setBudgetCarryover(month: string, categoryId: string, flag: boolean): Promise<void>;
+  holdBudgetForNextMonth(month: string, amount: number): Promise<boolean>;
+  resetBudgetHold(month: string): Promise<void>;
+  batchBudgetUpdates(action: () => Promise<void>): Promise<void>;
   getPayees(): Promise<AdapterPayee[]>;
   createPayee(payee: { name: string }): Promise<string>;
   updatePayee(id: string, fields: { name: string }): Promise<void>;
@@ -147,6 +162,11 @@ export const actualApiAdapter: ActualApiAdapter = {
   },
   getBudgetMonths: actual.getBudgetMonths,
   getBudgetMonth: actual.getBudgetMonth as (month: string) => Promise<AdapterBudgetMonth>,
+  setBudgetAmount: actual.setBudgetAmount,
+  setBudgetCarryover: actual.setBudgetCarryover,
+  holdBudgetForNextMonth: actual.holdBudgetForNextMonth,
+  resetBudgetHold: actual.resetBudgetHold,
+  batchBudgetUpdates: actual.batchBudgetUpdates,
   getPayees: actual.getPayees,
   createPayee: actual.createPayee,
   updatePayee: actual.updatePayee,

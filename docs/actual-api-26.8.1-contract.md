@@ -26,6 +26,11 @@ deleteCategory(id: string, transferCategoryId?: string): Promise<void>
 getTransactions(accountId: string, startDate: string, endDate: string): Promise<TransactionEntity[]>
 getBudgetMonths(): Promise<string[]>
 getBudgetMonth(month: string): Promise<BudgetMonth>
+setBudgetAmount(month: string, categoryId: string, value: number): Promise<void>
+setBudgetCarryover(month: string, categoryId: string, flag: boolean): Promise<void>
+holdBudgetForNextMonth(month: string, amount: number): Promise<boolean>
+resetBudgetHold(month: string): Promise<void>
+batchBudgetUpdates(action: () => Promise<void>): Promise<void>
 
 getPayees(): Promise<APIPayeeEntity[]>
 createPayee(payee: Omit<APIPayeeEntity, 'id'>): Promise<string>
@@ -44,6 +49,23 @@ deleteRule(id: string): Promise<boolean>
 
 `getBudgetMonth` returns top-level totals and `categoryGroups`. Expense category records include numeric `budgeted` and boolean `carryover`; income category records may omit those fields. Category groups always need runtime validation because the public declaration deliberately represents their extra budget fields as `Record<string, unknown>`.
 
+## Monthly budget observations
+
+The installed 26.8.1 declaration requires these top-level safe integer fields: `incomeAvailable`, `lastMonthOverspent`, `forNextMonth`, `totalBudgeted`, `toBudget`, `fromLastMonth`, `totalIncome`, `totalSpent`, and `totalBalance`. The MCP preserves their official names and signs. It does not invent friendly aliases such as `available`, `income`, or `overspent`.
+
+The bundled public handler confirms two sanitized category variants:
+
+- Envelope expense groups/categories expose `budgeted`, `spent`, and `balance`; expense categories also expose boolean `carryover`. Envelope income exposes `received` and omits `budgeted`.
+- Tracking groups/categories expose `budgeted`, `balance`, and either `spent` or `received`. Tracking income can therefore be budgetable when its returned category has a numeric `budgeted` field. Income carryover remains unsupported by the public setter even when a raw tracking cell is present.
+
+Identity fields are `id`, `name`, `is_income`, `hidden`, and category `group_id`. Hidden categories remain in month reads. Optional financial fields remain absent rather than becoming zero or null. Negative spending, balances, and overspending are meaningful and remain signed.
+
+`getBudgetMonths` returns an engine-computed inclusive range, typically extending roughly twelve months beyond the current month; it is not a list of months containing explicit planning. Every requested month is checked against this range before a read or mutation.
+
+`setBudgetCarryover` validates an expense category and applies from `startMonth` prospectively. `holdBudgetForNextMonth` rejects nonpositive amounts, applies a positive increment, may clamp it to available funds, and returns a boolean. `forNextMonth` can include both manual and automatic income holding, so reset results never label the aggregate as exclusively manual.
+
+`batchBudgetUpdates` sends a start message, executes the callback, and always sends an end message in `finally`. It exposes no transaction, rollback, or per-item outcome. Budget copy deliberately uses sequential public amount/carryover methods, records attempted/completed IDs, synchronizes once, and verifies the complete target instead of using this batch helper.
+
 ## Payee and rule documentation discrepancies
 
 The current official API reference documents payee CRUD, merge, payee-rule reads, and rule CRUD. The installed 26.8.1 declarations and bundled exports confirm those method families, with these release-relevant differences:
@@ -61,6 +83,8 @@ The bundled implementation also confirms safety behavior that the public signatu
 ## Sanitized real-budget observation
 
 On 2026-08-30, a read-only check against the configured controlled budget returned 11 payees, including 2 transfer payees. Every payee had `id`, `name`, and `transfer_acct`; the transfer field was explicitly either `null` or a string ID. The budget initially returned zero rules, so no pre-existing advanced-action variant was available to observe.
+
+Sanitized contract fixtures pin both budget variants without personal names, credentials, or real financial values. Real read suites validate the configured budget's current official range, signed aggregates, hidden flags, and shape coherence without recording fixture amounts. Tracking behavior is contract-covered; it is not claimed as real-server evidence unless the configured fixture actually returns a tracking income shape.
 
 On 2026-08-31, the explicitly authorized guarded integration and compiled MCP E2E suites created and then read temporary ordinary payees and representative temporary rules through the official server. Persisted rules retained stable IDs, `and` condition arrays, an `imported_payee contains <string>` condition, a `set payee <id>` action, and `pre`, default, and `post` stage changes. The MCP default stage round-tripped through the installed SDK representation and read back as `default`; the imported transaction was assigned the expected payee by Actual's official rule engine. Conditions and actions remained arrays and omitted optional metadata remained absent. No advanced pre-existing rule was present, so advanced readable shapes remain pinned by the installed declaration/bundle fixtures rather than claimed as a real-budget observation. All temporary rules, payees, accounts, categories, groups, and transactions were removed by exact returned ID, and permanent fingerprints were unchanged.
 

@@ -3,10 +3,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, sanitizeServerUrl } from '../src/config.js';
-import { batchSchema, dateRangeSchema, integerAmountSchema, isoDateSchema, opaqueIdSchema } from '../src/schemas.js';
+import { batchSchema, budgetMonthSchema, dateRangeSchema, integerAmountSchema, isoDateSchema, opaqueIdSchema, positiveIntegerAmountSchema } from '../src/schemas.js';
 import {
   createAccountInputSchema,
   createCategoryInputSchema,
+  copyBudgetInputSchema,
   deleteAccountInputSchema,
   deleteCategoryGroupInputSchema,
   deleteCategoryInputSchema,
@@ -54,6 +55,22 @@ describe('shared schemas', () => {
   it('validates real calendar dates', () => {
     expect(isoDateSchema.parse('2024-02-29')).toBe('2024-02-29');
     expect(() => isoDateSchema.parse('2025-02-29')).toThrow('valid calendar date');
+  });
+
+  it('validates strict calendar months, positive holds, and safe budget-copy defaults and bounds', () => {
+    expect(budgetMonthSchema.parse('2026-09')).toBe('2026-09');
+    for (const invalid of ['2026-9', '2026-13', '2026-09-01', 'September 2026']) {
+      expect(() => budgetMonthSchema.parse(invalid)).toThrow('YYYY-MM');
+    }
+    expect(positiveIntegerAmountSchema.parse(1)).toBe(1);
+    for (const invalid of [0, -1, 1.5]) expect(() => positiveIntegerAmountSchema.parse(invalid)).toThrow();
+    expect(copyBudgetInputSchema.parse({ sourceMonth: '2026-08', targetMonth: '2026-09' })).toEqual({
+      sourceMonth: '2026-08', targetMonth: '2026-09', dryRun: true, mode: 'fill-empty', includeCarryover: false,
+      includeHidden: false, confirmOverwrite: false, differenceLimit: 100, maxChanges: 500
+    });
+    expect(() => copyBudgetInputSchema.parse({ sourceMonth: '2026-08', targetMonth: '2026-08' })).toThrow('different');
+    expect(() => copyBudgetInputSchema.parse({ sourceMonth: '2026-08', targetMonth: '2026-09', maxChanges: 501 })).toThrow('500');
+    expect(() => copyBudgetInputSchema.parse({ sourceMonth: '2026-08', targetMonth: '2026-09', unknown: true })).toThrow();
   });
 
   it('rejects reversed and longer-than-366-day ranges', () => {

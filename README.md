@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.3.0 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.4.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Thirty-four read, transaction, budget-structure, payee, rule, health, and synchronization tools.
+- Forty-two read, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -246,6 +246,25 @@ Example desired-state update:
 
 Persisted rules execute through Actual's official import pipeline. Create a rule that sets an existing payee or category, then call `actual_import_transactions` with a unique `imported_id` and matching `imported_payee`; subsequent reads show Actual's official result. Version 0.3.0 does not expose `actual_run_rules` or `actual_preview_rule`: the pinned public SDK exports neither manual execution nor unpublished-rule preview, and the MCP does not call bundled internal handlers.
 
+## Budget
+
+Version 0.4.0 adds eight monthly planning tools. Budget months use strict `YYYY-MM` form. Every monetary value is a signed safe integer in the budget currency's minor units; signs from Actual are preserved, including negative spending, balances, and overspending. Reads expose only official aggregate and category fields returned by `@actual-app/api@26.8.1`.
+
+| Tool | Purpose and safety behavior |
+| --- | --- |
+| `actual_list_budget_months` | Lists the official available range. A listed month is queryable but does not necessarily contain configured planning. |
+| `actual_get_budget_month` | Returns official aggregates and validated envelope/tracking category variants, including hidden categories and absent optional fields. |
+| `actual_get_budget_summary` | Returns the same official aggregates with optional group/category filters and bounded category detail. |
+| `actual_set_budget_amount` | Sets a desired signed `budgeted` value, synchronizes, and verifies it. Zero clears planning. Envelope income is rejected when no numeric `budgeted` field exists; shape-proven tracking income is supported. |
+| `actual_set_budget_carryover` | Sets expense carryover prospectively from the selected month through later available months and verifies the affected range. |
+| `actual_hold_budget_for_next_month` | Applies a positive incremental envelope hold. Actual may clamp the request to available funds; the result reports the official boolean plus observed `forNextMonth` before and after. |
+| `actual_reset_budget_hold` | Resets only the manual envelope hold. `forNextMonth` may remain nonzero because automatic income holding can contribute to the same aggregate. |
+| `actual_copy_budget_month` | Copies only category planning amounts and optionally carryover. Transactions, actual income, spending, balances, goals, and month holds are never copied. |
+
+Budget copy defaults are `dryRun: true`, `mode: "fill-empty"`, `includeCarryover: false`, and `includeHidden: false`. `fill-empty` changes only observed zero target amounts. `overwrite` requires `confirmOverwrite: true` whenever a different nonzero target would be replaced. Hidden categories participate only with `includeHidden: true`. Preview differences and execution changes are bounded; exact counts and omitted-difference counts remain available.
+
+Copy execution uses sequential official mutations in one FIFO lifecycle, followed by one synchronization and complete read-back verification. It is not transactional and is not automatically retried or rolled back. A partial failure returns attempted/completed IDs, captured original target values, synchronization state, and recovery guidance. Run `actual_sync`, read the target month, and inspect those IDs before deciding on manual recovery; do not replay the copy blindly.
+
 ## Development
 
 ```bash
@@ -306,7 +325,7 @@ ACTUAL_INTEGRATION_ALLOW_WRITES=true npm run test:e2e:write
 
 ### Write test safety
 
-Real writes are disabled by default. Write tests refuse to continue unless the configured account name is exactly `TESTE MCP - Conta Corrente` and that account exists exactly once. Every run creates a UUID-scoped `imported_id` beginning with `mcp-integration-test:`. Update and delete operate only on the captured transaction, and cleanup revalidates the captured ID, exact import ID, prefix, and `MCP INTEGRATION TEST` payee before deletion. Cleanup runs even after a failed assertion and reports only the transaction ID and import ID if manual cleanup is required.
+Real writes are disabled by default. Write tests refuse to continue unless the configured account name is exactly `TESTE MCP - Conta Corrente` and that account exists exactly once. Every run creates UUID-scoped entities and records exact returned IDs. Budget writes select the final suitable future pair from the official month range and refuse protected nonzero planning, enabled carryover, month holds, or protected transactions. Cleanup restores/reset owned holds, clears owned amounts, disables owned carryover, removes exact entities in dependency order, and compares a permanent fingerprint that includes monthly planning. Cleanup runs even after a failed assertion and reports only sanitized IDs and months if manual recovery is required.
 
 Use a dedicated test account only. Never enable write tests against a personal or production account.
 
@@ -346,13 +365,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.3.0 .
+docker build -t actual-budget-mcp:0.4.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.3.0
+  actual-budget-mcp:0.4.0
 ```
 
 ## Security
@@ -369,10 +388,13 @@ docker run --rm -i \
 - `CONNECTION_ERROR`: verify the NAS address or shared-network hostname from inside the Hermes container. Do not use container-local `localhost` for a separate Actual container.
 - `BUDGET_LOAD_ERROR`: verify the sync ID and configure `ACTUAL_ENCRYPTION_PASSWORD` only when the selected budget is encrypted.
 - `CACHE_IN_USE`: stop the other MCP process or configure a distinct cache. Do not remove a live process lock.
-- `RESULT_TOO_LARGE`: request a narrower transaction date range; results are never silently truncated.
+- `RESULT_TOO_LARGE`: request a narrower transaction date range or lower the budget-copy scope; results are never silently truncated.
+- `BUDGET_MONTH_UNAVAILABLE`: choose a month returned by `actual_list_budget_months`.
+- `UNSUPPORTED_BUDGET_MODE` or `INCOMPATIBLE_BUDGET_CATEGORY`: inspect the returned month/category capabilities before another mutation.
+- `BUDGET_COPY_PARTIAL_STATE` or `BUDGET_VERIFICATION_FAILED`: run `actual_sync`, read the affected month, and inspect the returned safe metadata before recovery. Do not replay automatically.
 - `out-of-sync-migrations`: upgrade Actual Server and this pinned API version together, then rebuild.
 - Tool discovery works before Actual is reachable. Use `actual_health` for a sanitized operational diagnostic.
 
 ## Scope
 
-Version 0.3.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, budgeting writes, reports, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.
+Version 0.4.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.

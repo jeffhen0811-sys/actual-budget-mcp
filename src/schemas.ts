@@ -6,6 +6,8 @@ export const MAX_TRANSACTION_RESULTS = 5_000;
 export const MAX_ID_LENGTH = 512;
 export const MAX_TEXT_LENGTH = 10_000;
 export const MAX_ENTITY_NAME_LENGTH = 255;
+export const MAX_BUDGET_CATEGORY_RESULTS = 500;
+export const DEFAULT_BUDGET_CATEGORY_RESULTS = 100;
 
 export const opaqueIdSchema = z
   .string('Identifier must be a string.')
@@ -36,6 +38,25 @@ function isCalendarDate(value: string): boolean {
 export const isoDateSchema = z
   .string('Date must be a string.')
   .refine(isCalendarDate, 'Date must be a valid calendar date in YYYY-MM-DD format.');
+
+function isCalendarMonth(value: string): boolean {
+  if (!/^\d{4}-\d{2}$/.test(value)) return false;
+  const [year, month] = value.split('-').map(Number);
+  return Number.isInteger(year) && Number.isInteger(month) && year! >= 1 && month! >= 1 && month! <= 12;
+}
+
+export const budgetMonthSchema = z
+  .string('Budget month must be a string.')
+  .refine(isCalendarMonth, 'Budget month must be a valid calendar month in YYYY-MM format.');
+
+export const positiveIntegerAmountSchema = integerAmountSchema
+  .refine(value => value > 0, 'Amount must be greater than zero.');
+
+export const budgetResultLimitSchema = z
+  .number('Limit must be a number.')
+  .int('Limit must be an integer.')
+  .min(1, 'Limit must be at least 1.')
+  .max(MAX_BUDGET_CATEGORY_RESULTS, `Limit must not exceed ${MAX_BUDGET_CATEGORY_RESULTS}.`);
 
 export const dateRangeSchema = z
   .object({ startDate: isoDateSchema, endDate: isoDateSchema })
