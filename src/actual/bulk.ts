@@ -1,6 +1,7 @@
 import { PublicError } from '../errors.js';
 import type { AdapterTransaction } from './adapter.js';
 import { projectTransaction } from './transactions.js';
+import { meaningfulId } from './transfers.js';
 
 export interface BulkDesiredFields {
   category?: string | null;
@@ -75,7 +76,7 @@ export function planBulkTransactionUpdates(
       transactionId: item.transactionId, status: 'blocked' as const, changedFields, before: current, after,
       reason: 'SPLIT_TRANSACTION_PROTECTED' as const
     };
-    const transferRelationalChange = current.transfer_id != null && changedFields.some(field => field !== 'cleared');
+    const transferRelationalChange = meaningfulId(current.transfer_id) !== null && changedFields.some(field => field !== 'cleared');
     if (transferRelationalChange) return {
       transactionId: item.transactionId, status: 'blocked' as const, changedFields, before: current, after,
       reason: 'TRANSFER_PROTECTED' as const

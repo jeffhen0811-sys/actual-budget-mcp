@@ -18,6 +18,7 @@ export interface TransactionSearchRequest {
   categoryIds?: string[] | undefined;
   uncategorizedOnly?: boolean | undefined;
   importSource?: 'any' | 'manual' | 'imported' | undefined;
+  transferState?: 'any' | 'transfer' | 'non-transfer' | undefined;
   cleared?: boolean | undefined;
   minAmount?: number | undefined;
   maxAmount?: number | undefined;
@@ -29,7 +30,7 @@ export interface TransactionSearchRequest {
   includeTotals?: boolean | undefined;
 }
 
-const transactionSelect = [
+export const transactionSelect = [
   'id', 'account', 'date', 'amount', 'payee', { payee_name: 'payee.name' },
   'imported_payee', 'category', { category_name: 'category.name' }, 'notes',
   'imported_id', 'transfer_id', 'cleared', 'reconciled', 'starting_balance_flag',
@@ -51,6 +52,8 @@ export function buildTransactionFilters(input: TransactionSearchRequest): Filter
   if (input.uncategorizedOnly) filters.push({ category: null }, { transfer_id: null }, { is_parent: false });
   if (input.importSource === 'manual') filters.push({ $or: [{ imported_id: null }, { imported_id: '' }] });
   if (input.importSource === 'imported') filters.push({ imported_id: { $ne: null } }, { imported_id: { $ne: '' } });
+  if (input.transferState === 'transfer') filters.push({ transfer_id: { $ne: null } }, { transfer_id: { $ne: '' } });
+  if (input.transferState === 'non-transfer') filters.push({ $or: [{ transfer_id: null }, { transfer_id: '' }] });
   if (input.cleared !== undefined) filters.push({ cleared: input.cleared });
   if (input.minAmount !== undefined || input.maxAmount !== undefined) {
     filters.push({ amount: {
@@ -108,6 +111,46 @@ export function compileTransactionsByIds(transactionIds: string[]): AdapterTrans
     .options({ splits: 'all' });
 }
 
+export interface BoundedLeafQueryRequest {
+  startDate: string;
+  endDate: string;
+  accountIds?: string[];
+  limit: number;
+  includeSplitChildren?: boolean;
+}
+
+/** Fixed relationship query. Caller data can only occupy the exact ID value. */
+export function compileTransferRelationship(transactionIds: string[]): AdapterTransactionQuery {
+  if (transactionIds.length < 1 || transactionIds.length > 2) {
+    throw new PublicError('CONFIGURATION_ERROR', 'A relationship lookup requires one or two exact transaction IDs.', 'actual_transfer_relationship', false);
+  }
+  return q('transactions')
+    .filter({ id: transactionIds.length === 1 ? transactionIds[0]! : { $oneof: transactionIds } })
+    .select([...transactionSelect])
+    .orderBy([{ id: 'asc' }])
+    .limit(2)
+    .options({ splits: 'all' });
+}
+
+/** Fixed bounded scan used by diagnostics and reconciliation; limit is supplied by trusted orchestration. */
+export function compileBoundedLeafTransactions(input: BoundedLeafQueryRequest): AdapterTransactionQuery {
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 5_001) {
+    throw new PublicError('CONFIGURATION_ERROR', 'Leaf query limit must be between 1 and 5001.', 'actual_leaf_query', false);
+  }
+  const filters: Filter[] = [
+    { date: { $gte: input.startDate, $lte: input.endDate } },
+    { is_parent: false }
+  ];
+  if (input.accountIds?.length) filters.push({ account: { $oneof: input.accountIds } });
+  if (!input.includeSplitChildren) filters.push({ is_child: false });
+  return q('transactions')
+    .filter({ $and: filters })
+    .select([...transactionSelect])
+    .orderBy([{ date: 'asc' }, { id: 'asc' }])
+    .limit(input.limit)
+    .options({ splits: 'all' });
+}
+
 function objectValue(value: unknown, operation: string): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an unsupported transaction query shape.', operation, false);
@@ -145,6 +188,9 @@ export function projectTransaction(transaction: AdapterTransaction, operation = 
       typeof transaction.date !== 'string' || !Number.isSafeInteger(transaction.amount)) {
     throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an incomplete canonical transaction.', operation, false);
   }
+  const transferId = typeof transaction.transfer_id === 'string' && transaction.transfer_id.trim().length > 0
+    ? transaction.transfer_id.trim()
+    : null;
   return {
     id: transaction.id,
     account: transaction.account,
@@ -159,7 +205,8 @@ export function projectTransaction(transaction: AdapterTransaction, operation = 
     ...optional(transaction, 'reconciled'),
     ...optional(transaction, 'imported_id'),
     ...optional(transaction, 'imported_payee'),
-    ...optional(transaction, 'transfer_id'),
+    ...(transaction.transfer_id === undefined ? {} : { transfer_id: transferId }),
+    isTransfer: transferId !== null,
     ...optional(transaction, 'starting_balance_flag'),
     ...optional(transaction, 'is_parent'),
     ...optional(transaction, 'is_child'),

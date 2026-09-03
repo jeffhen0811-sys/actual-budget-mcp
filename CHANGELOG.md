@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.6.0 - 2026-09-03
+
+### Added
+
+- Seven tools for transfer payees, reciprocal pair lookup/search, dry-run-first manual transfer creation, possible-transfer and possible-duplicate diagnostics, and account reconciliation snapshots.
+- Deterministic pair/candidate keys, integrity reason codes, bounded classification, split-safe reconciliation, cutoff balance cross-checks, and phase-aware transfer recovery evidence.
+
+### Changed
+
+- Expanded the exact MCP inventory from 46 to 53 tools while preserving all v0.5.0 tools and required contracts.
+- Made canonical reads, import/preview fingerprints, search, update, bulk update, deletion, cleanup, and permanent fingerprints transfer-aware while keeping `@actual-app/api` pinned exactly at 26.8.1.
+- Package, lockfile, MCP metadata, README, CHANGELOG, acceptance guidance, traceability, and readiness metadata now report 0.6.0.
+
+### Fixed
+
+- Prevented reciprocal account movements from being treated as unrelated income/expense evidence and prevented broken relationships from being silently fabricated or repaired.
+- Prevented unbounded candidate scans, amount-only duplicate claims, ambiguous automatic matching, direct relationship mutation, unsupported reconciliation mutation, unverified transfer creation/deletion success, and automatic retry or rollback after partial creation.
+- Refreshed transfer deletion state once before final exact-ID verification when the pinned SDK temporarily retains a removed counterpart in its local query view, without repeating the delete call.
+
 ## 0.5.0 - 2026-09-02
 
 ### Added

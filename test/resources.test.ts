@@ -44,4 +44,21 @@ describe('real-test exact-ID resource registry', () => {
     registry.register('rule', 'rule-id', 'Temporary Rule');
     expect(() => registry.assertEmpty()).toThrow('rule id=rule-id name=Temporary Rule');
   });
+
+  it('owns reciprocal IDs as one unit, deletes once, and verifies both sides absent', async () => {
+    const registry = new ResourceRegistry();
+    const key = `v1:${'a'.repeat(64)}`;
+    registry.registerTransferPair(key, ['side-b', 'side-a'], 'Temporary transfer');
+    const transaction = vi.fn().mockResolvedValue(undefined);
+    const verifyTransactionsAbsent = vi.fn().mockResolvedValue(undefined);
+    const noop = vi.fn().mockResolvedValue(undefined);
+    await registry.cleanup({
+      transaction, verifyTransactionsAbsent, rule: noop, payee: noop,
+      category: noop, categoryGroup: noop, account: noop
+    });
+    expect(transaction).toHaveBeenCalledOnce();
+    expect(transaction).toHaveBeenCalledWith({ kind: 'transaction', id: 'side-a', name: 'Temporary transfer' });
+    expect(verifyTransactionsAbsent).toHaveBeenCalledWith(['side-a', 'side-b']);
+    expect(registry.snapshot()).toEqual([]);
+  });
 });

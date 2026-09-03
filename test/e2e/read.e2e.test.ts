@@ -2,18 +2,24 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { TOOL_NAMES } from '../../src/mcp/server.js';
 import {
   accountsOutputSchema,
+  accountReconciliationOutputSchema,
   budgetMonthOutputSchema,
   budgetSummaryOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  findPossibleDuplicatesOutputSchema,
+  findPossibleTransfersOutputSchema,
+  getTransferOutputSchema,
   listBudgetMonthsOutputSchema,
   payeeOutputSchema,
   payeesOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
   searchTransactionsOutputSchema,
+  searchTransfersOutputSchema,
   transactionOutputSchema,
-  transactionsOutputSchema
+  transactionsOutputSchema,
+  transferPayeesOutputSchema
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
 import { CARD_TEST_ACCOUNT_NAME, loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
@@ -33,10 +39,10 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers exactly 46 v0.5.0 tools with strict schemas and compatible annotations through stdio', async () => {
+  it('discovers exactly 53 v0.6.0 tools with strict schemas and compatible annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(46);
+    expect(tools).toHaveLength(53);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
@@ -56,6 +62,11 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: false, idempotentHint: true
     });
+    for (const name of [
+      'actual_list_transfer_payees', 'actual_get_transfer', 'actual_search_transfers',
+      'actual_find_possible_transfers', 'actual_find_possible_duplicates', 'actual_get_account_reconciliation'
+    ]) expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+    expect(tools.find(tool => tool.name === 'actual_create_transfer')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
   });
 
   it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
@@ -71,7 +82,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       });
       assertNoConfiguredSecrets(result);
     }
-    expect((await running.client.listTools()).tools).toHaveLength(46);
+    expect((await running.client.listTools()).tools).toHaveLength(53);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
@@ -194,5 +205,26 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     }
     expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
     assertNoConfiguredSecrets(running.stderr());
+  });
+
+  it('exercises transfer, diagnostic, and reconciliation reads through compiled stdio', async () => {
+    const transferPayees = await callTool(running, 'actual_list_transfer_payees', {}, transferPayeesOutputSchema);
+    expect(transferPayees.transferPayees.length).toBeGreaterThan(0);
+    const bounds = { startDate: '2026-08-01', endDate: '2026-08-31', limit: 100, offset: 0 };
+    const transfers = await callTool(running, 'actual_search_transfers', bounds, searchTransfersOutputSchema);
+    if (transfers.transfers[0]?.transactionA) {
+      const exact = await callTool(running, 'actual_get_transfer', { transactionId: transfers.transfers[0].transactionA.id }, getTransferOutputSchema);
+      expect(exact.pairKey).toBe(transfers.transfers[0].pairKey);
+    }
+    const candidates = await callTool(running, 'actual_find_possible_transfers', bounds, findPossibleTransfersOutputSchema);
+    const duplicates = await callTool(running, 'actual_find_possible_duplicates', bounds, findPossibleDuplicatesOutputSchema);
+    expect(candidates.page.returned).toBe(candidates.candidates.length);
+    expect(duplicates.page.returned).toBe(duplicates.candidates.length);
+    const accounts = (await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema)).accounts;
+    const account = accounts.find(item => item.name === REQUIRED_TEST_ACCOUNT_NAME)!;
+    const reconciliation = await callTool(running, 'actual_get_account_reconciliation', {
+      accountId: account.id, cutoff: '2026-08-31'
+    }, accountReconciliationOutputSchema);
+    expect(reconciliation.balances.uncleared).toBe(reconciliation.balances.ledger - reconciliation.balances.cleared);
   });
 });

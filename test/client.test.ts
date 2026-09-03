@@ -97,6 +97,9 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
 
   it('reports partial success when synchronization fails after a mutation', async () => {
     const { api, client } = await fixture();
+    vi.mocked(api.aqlQuery).mockResolvedValueOnce({ data: [{
+      id: 'transaction', account: 'account', date: '2026-01-01', amount: -1, transfer_id: null
+    }] });
     vi.mocked(api.sync).mockRejectedValueOnce(new Error('network failure'));
     await expect(client.updateTransaction('transaction', { notes: 'explicit note' })).rejects.toMatchObject({
       code: 'MUTATION_SYNC_FAILED', retryable: false,

@@ -8,6 +8,7 @@ import { PublicError } from '../../src/errors.js';
 import {
   integrationConfig,
   loadRealTestEnvironment,
+  CARD_TEST_ACCOUNT_NAME,
   REQUIRED_TEST_ACCOUNT_NAME,
   skipMessage
 } from '../real/env.js';
@@ -78,6 +79,9 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
         }
         await registry.cleanup({
           transaction: async resource => { await client.deleteTransaction(resource.id); },
+          verifyTransactionsAbsent: async ids => {
+            for (const id of ids) await expect(client.getTransaction(id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+          },
           rule: async resource => { await client.deleteRule(resource.id, true); },
           payee: async resource => { assertPayeeWriteAllowed(resource.name, 'delete'); await client.deletePayee(resource.id, true); },
           category: async resource => { await client.deleteCategory(resource.id); },
@@ -143,6 +147,25 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
     await assertSafeToDelete(transaction!);
     await client.updateTransaction(transactionId, { notes: 'MCP INTEGRATION TEST UPDATED' });
     expect((await ownedTransactions())[0]).toMatchObject({ notes: 'MCP INTEGRATION TEST UPDATED' });
+  });
+
+  it('previews, creates, verifies, owns, and deletes one reciprocal transfer pair', async () => {
+    const accounts = await client.listAccounts();
+    const other = accounts.find(account => account.name === CARD_TEST_ACCOUNT_NAME);
+    expect(other, `Missing account ${CARD_TEST_ACCOUNT_NAME}`).toBeDefined();
+    const before = await permanentFixtureFingerprint(client);
+    const request = { fromAccountId: accountId, toAccountId: other!.id, amount: 321, date: TEST_DATE };
+    await expect(client.createTransfer(request)).resolves.toMatchObject({ dryRun: true, executed: false, pair: null });
+    expect(await permanentFixtureFingerprint(client)).toBe(before);
+    const created = await client.createTransfer({ ...request, dryRun: false, confirmWrite: true });
+    expect(created).toMatchObject({ verified: true, phase: 'verified', pair: { integrity: 'VALID' } });
+    const ids = [created.pair!.transactionA!.id, created.pair!.transactionB!.id] as const;
+    registry.registerTransferPair(created.pair!.pairKey, ids, `transfer-${randomUUID()}`);
+    await expect(client.getTransfer(ids[0])).resolves.toMatchObject({ pairKey: created.pair!.pairKey, integrity: 'VALID' });
+    await expect(client.deleteTransaction(ids[0])).resolves.toMatchObject({ deletedTransferPair: true, verified: true });
+    registry.releaseTransferPair(created.pair!.pairKey);
+    for (const id of ids) await expect(client.getTransaction(id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(await permanentFixtureFingerprint(client)).toBe(before);
   });
 
   it('performs an explicit sync and keeps the budget operational', async () => {

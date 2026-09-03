@@ -7,6 +7,7 @@ const sdk = vi.hoisted(() => ({
   createCategoryGroup: vi.fn(), updateCategoryGroup: vi.fn(), deleteCategoryGroup: vi.fn(), getCategories: vi.fn(),
   createCategory: vi.fn(), updateCategory: vi.fn(), deleteCategory: vi.fn(), getBudgetMonths: vi.fn(),
   getBudgetMonth: vi.fn(), getPayees: vi.fn(), getTransactions: vi.fn(), aqlQuery: vi.fn(), importTransactions: vi.fn(),
+  addTransactions: vi.fn(),
   setBudgetAmount: vi.fn(), setBudgetCarryover: vi.fn(), holdBudgetForNextMonth: vi.fn(),
   resetBudgetHold: vi.fn(), batchBudgetUpdates: vi.fn(),
   createPayee: vi.fn(), updatePayee: vi.fn(), deletePayee: vi.fn(), mergePayees: vi.fn(),
@@ -96,6 +97,30 @@ describe('Actual 26.8.1 adapter compatibility', () => {
     expect(sdk.createRule).toHaveBeenCalledWith({ stage: null, conditionsOp: 'and', conditions: [], actions: [] });
     expect(sdk.updateRule).toHaveBeenCalledWith(rule);
     expect(sdk.deleteRule).toHaveBeenCalledWith('rule-id');
+  });
+
+  it('normalizes transfer-payee reads and forwards explicit transfer creation and cutoff balance arguments', async () => {
+    const cutoff = new Date('2026-09-01T00:00:00.000Z');
+    sdk.getPayees.mockResolvedValue([
+      { id: 'ordinary', name: 'Ordinary', transfer_acct: null },
+      { id: 'blank', name: 'Blank', transfer_acct: '   ' },
+      { id: 'transfer', name: 'Savings', transfer_acct: 'savings' }
+    ]);
+    sdk.addTransactions.mockResolvedValue('ok');
+    sdk.getAccountBalance.mockResolvedValue(123);
+
+    await expect(actualApiAdapter.getTransferPayees()).resolves.toEqual([
+      { id: 'transfer', name: 'Savings', transfer_acct: 'savings' }
+    ]);
+    await expect(actualApiAdapter.addTransactions('checking', [{
+      date: '2026-09-01', amount: -123, payee: 'transfer', notes: 'Move'
+    }], { runTransfers: true })).resolves.toBe('ok');
+    await expect(actualApiAdapter.getAccountBalance('checking', cutoff)).resolves.toBe(123);
+
+    expect(sdk.addTransactions).toHaveBeenCalledWith('checking', [{
+      date: '2026-09-01', amount: -123, payee: 'transfer', notes: 'Move'
+    }], { runTransfers: true });
+    expect(sdk.getAccountBalance).toHaveBeenCalledWith('checking', cutoff);
   });
 
   it('forwards all seven installed budget bindings without using batch execution', async () => {

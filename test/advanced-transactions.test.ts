@@ -52,10 +52,10 @@ describe('canonical transaction and query foundations', () => {
     });
     expect(projected).toEqual({
       id: 'parent', account: 'account', date: '2026-09-01', amount: -100,
-      payee: null, category: null, is_parent: true, parent_id: null,
+      payee: null, category: null, isTransfer: false, is_parent: true, parent_id: null,
       subtransactions: [{
         id: 'child', account: 'account', date: '2026-09-01', amount: -100,
-        payee_name: 'Cafe', category_name: null, is_child: true, parent_id: 'parent'
+        payee_name: 'Cafe', category_name: null, isTransfer: false, is_child: true, parent_id: 'parent'
       }]
     });
     expect(transactionSchema.parse(projected)).toEqual(projected);

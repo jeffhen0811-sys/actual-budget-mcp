@@ -40,6 +40,7 @@ export interface AdapterTransaction {
   id: string; account: string; date: string; amount: number; payee?: string | null; category?: string | null;
   notes?: string | null; cleared?: boolean; reconciled?: boolean; imported_id?: string | null;
   imported_payee?: string | null; transfer_id?: string | null; starting_balance_flag?: boolean;
+  isTransfer?: boolean;
   is_parent?: boolean; is_child?: boolean; parent_id?: string | null;
   payee_name?: string | null; category_name?: string | null;
   subtransactions?: AdapterTransaction[];
@@ -63,7 +64,7 @@ export interface AdapterBudgetMonth {
 }
 export interface ImportTransaction {
   account: string; date: string; amount: number; imported_id: string; payee_name?: string;
-  imported_payee?: string; notes?: string; cleared?: boolean; category?: string;
+  payee?: string; imported_payee?: string; notes?: string; cleared?: boolean; category?: string;
 }
 
 export interface AdapterImportOptions {
@@ -100,7 +101,7 @@ export interface ActualApiAdapter {
   closeAccount(id: string, transferAccountId?: string, transferCategoryId?: string): Promise<void>;
   reopenAccount(id: string): Promise<void>;
   deleteAccount(id: string): Promise<void>;
-  getAccountBalance(id: string): Promise<number>;
+  getAccountBalance(id: string, cutoff?: Date): Promise<number>;
   getCategoryGroups(): Promise<AdapterCategoryGroup[]>;
   createCategoryGroup(group: Omit<AdapterCategoryGroup, 'id' | 'categories'>): Promise<string>;
   updateCategoryGroup(id: string, fields: Pick<Partial<AdapterCategoryGroup>, 'name'>): Promise<void>;
@@ -118,6 +119,7 @@ export interface ActualApiAdapter {
   resetBudgetHold(month: string): Promise<void>;
   batchBudgetUpdates(action: () => Promise<void>): Promise<void>;
   getPayees(): Promise<AdapterPayee[]>;
+  getTransferPayees(): Promise<AdapterPayee[]>;
   createPayee(payee: { name: string }): Promise<string>;
   updatePayee(id: string, fields: { name: string }): Promise<void>;
   deletePayee(id: string): Promise<void>;
@@ -129,6 +131,11 @@ export interface ActualApiAdapter {
   deleteRule(id: string): Promise<boolean>;
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<AdapterTransaction[]>;
   aqlQuery(query: AdapterTransactionQuery): Promise<unknown>;
+  addTransactions(
+    accountId: string,
+    transactions: Omit<ImportTransaction, 'account' | 'imported_id'>[],
+    options: { runTransfers: true }
+  ): Promise<'ok'>;
   importTransactions(accountId: string, transactions: ImportTransaction[], options: AdapterImportOptions): Promise<AdapterImportResult>;
   updateTransaction(id: string, fields: Partial<AdapterTransaction>): Promise<unknown>;
   deleteTransaction(id: string): Promise<unknown>;
@@ -194,6 +201,9 @@ export const actualApiAdapter: ActualApiAdapter = {
   resetBudgetHold: actual.resetBudgetHold,
   batchBudgetUpdates: actual.batchBudgetUpdates,
   getPayees: actual.getPayees,
+  getTransferPayees: async () => (await actual.getPayees()).filter(payee =>
+    typeof payee.transfer_acct === 'string' && payee.transfer_acct.trim().length > 0
+  ),
   createPayee: actual.createPayee,
   updatePayee: actual.updatePayee,
   deletePayee: actual.deletePayee,
@@ -205,6 +215,7 @@ export const actualApiAdapter: ActualApiAdapter = {
   deleteRule: actual.deleteRule,
   getTransactions: actual.getTransactions,
   aqlQuery: actual.aqlQuery,
+  addTransactions: (accountId, transactions, options) => actual.addTransactions(accountId, transactions, options),
   importTransactions: actual.importTransactions,
   updateTransaction: actual.updateTransaction,
   deleteTransaction: actual.deleteTransaction

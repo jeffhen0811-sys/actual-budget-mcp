@@ -19,7 +19,7 @@ function budget(month: string, budgeted = 0) {
   };
 }
 
-function reader(ruleValue = 'market', payeeName = 'Market') {
+function reader(ruleValue = 'market', payeeName = 'Market', transferId = 'reciprocal-id') {
   return {
     listAccounts: async () => [
       { id: 'checking', name: REQUIRED_TEST_ACCOUNT_NAME, offbudget: false, closed: false },
@@ -33,7 +33,7 @@ function reader(ruleValue = 'market', payeeName = 'Market') {
       actions: [{ op: 'set', field: 'payee', value: 'payee' }],
       writable: true
     }],
-    getTransactions: async (accountId: string) => [{ id: `transaction-${accountId}`, account: accountId }],
+    getTransactions: async (accountId: string) => [{ id: `transaction-${accountId}`, account: accountId, transfer_id: transferId }],
     listBudgetMonths: async () => ({ months: ['2026-08', '2026-09'], count: 2 }),
     getBudgetMonth: async (month: string) => budget(month)
   };
@@ -45,6 +45,7 @@ describe('permanent fixture fingerprint', () => {
     expect(await permanentFixtureFingerprint(reader())).toBe(baseline);
     expect(await permanentFixtureFingerprint(reader('different'))).not.toBe(baseline);
     expect(await permanentFixtureFingerprint(reader('market', 'Renamed'))).not.toBe(baseline);
+    expect(await permanentFixtureFingerprint(reader('market', 'Market', 'changed-reciprocal-id'))).not.toBe(baseline);
   });
 
   it('changes when permanent monthly planning changes', async () => {

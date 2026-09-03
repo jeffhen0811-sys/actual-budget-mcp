@@ -25,11 +25,35 @@ function fakeRuntime(): ToolRuntime {
     getAccount: vi.fn().mockResolvedValue({ id: 'a1', name: 'Conta Corrente', offbudget: false, closed: false, balance: 1234 }),
     listCategories: vi.fn().mockResolvedValue([{ groupId: 'g1', groupName: 'Moradia', categories: [{ id: 'c1', name: 'Aluguel', hidden: false }] }]),
     listPayees: vi.fn().mockResolvedValue([{ id: 'p1', name: 'Padaria São João' }]),
+    listTransferPayees: vi.fn().mockResolvedValue([{
+      id: 'tp1', name: 'Savings', accountId: 'a2', accountName: 'Savings', accountClosed: false, accountOffBudget: false
+    }]),
     getTransactions: vi.fn().mockResolvedValue([{ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500, notes: 'Café da manhã' }]),
     getTransaction: vi.fn().mockResolvedValue({ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500 }),
     searchTransactions: vi.fn().mockResolvedValue({
       transactions: [{ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500 }],
       page: { limit: 100, offset: 0, returned: 1 }, splitMode: 'inline'
+    }),
+    getTransfer: vi.fn().mockResolvedValue({
+      pairKey: `v1:${'b'.repeat(64)}`,
+      transactionA: { id: 'ta', account: 'a1', date: '2026-08-01', amount: -100, transfer_id: 'tb', isTransfer: true },
+      transactionB: { id: 'tb', account: 'a2', date: '2026-08-01', amount: 100, transfer_id: 'ta', isTransfer: true },
+      integrity: 'VALID', reasonCodes: [],
+      fromTransaction: { id: 'ta', account: 'a1', date: '2026-08-01', amount: -100, transfer_id: 'tb', isTransfer: true },
+      toTransaction: { id: 'tb', account: 'a2', date: '2026-08-01', amount: 100, transfer_id: 'ta', isTransfer: true }, magnitude: 100
+    }),
+    searchTransfers: vi.fn().mockResolvedValue({ transfers: [], counts: { matched: 0, valid: 0, invalid: 0 }, page: { limit: 100, offset: 0, returned: 0 } }),
+    createTransfer: vi.fn().mockResolvedValue({
+      dryRun: true, executed: false, synchronized: false, verified: false, phase: 'preflight', anchorAccountId: 'a1',
+      fromSide: { accountId: 'a1', amount: -100, payeeId: 'tp2', categoryId: null, cleared: false },
+      toSide: { accountId: 'a2', amount: 100, payeeId: 'tp1', categoryId: null, cleared: false }, pair: null
+    }),
+    findPossibleTransfers: vi.fn().mockResolvedValue({ candidates: [], counts: { matched: 0, unique: 0, ambiguous: 0 }, page: { limit: 100, offset: 0, returned: 0 } }),
+    findPossibleDuplicates: vi.fn().mockResolvedValue({ candidates: [], counts: { matched: 0, strong: 0, likely: 0 }, page: { limit: 100, offset: 0, returned: 0 } }),
+    getAccountReconciliation: vi.fn().mockResolvedValue({
+      account: { id: 'a1', name: 'Checking' }, cutoff: '2026-08-31',
+      balances: { ledger: 100, cleared: 100, reconciled: 0, uncleared: 0 },
+      counts: { ledger: 1, cleared: 1, reconciled: 0, uncleared: 0 }, status: 'NO_STATEMENT', statement: null
     }),
     previewImport: vi.fn().mockResolvedValue({
       requestFingerprint: `v1:${'a'.repeat(64)}`, wouldAddCount: 1, wouldUpdateCount: 0, ignoredCount: 0,
@@ -124,10 +148,10 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly forty-six tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
+  it('registers exactly fifty-three tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(46);
+    expect(tools).toHaveLength(53);
     expect(V040_TOOL_NAMES).toHaveLength(42);
     expect(V040_TOOL_NAMES.every(name => tools.some(tool => tool.name === name))).toBe(true);
     for (const tool of tools) {
@@ -136,7 +160,7 @@ describe('MCP server contract', () => {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
       expect(tool.inputSchema.description).toEqual(expect.any(String));
-      expect(tool.outputSchema?.description).toEqual(expect.any(String));
+      expect(tool.outputSchema?.description, tool.name).toEqual(expect.any(String));
     }
     expect(tools.find(tool => tool.name === 'actual_list_accounts')?.annotations?.readOnlyHint).toBe(true);
     expect(tools.find(tool => tool.name === 'actual_sync')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: true });
@@ -165,6 +189,15 @@ describe('MCP server contract', () => {
         readOnlyHint: true, destructiveHint: false, idempotentHint: true
       });
     }
+    for (const name of [
+      'actual_list_transfer_payees', 'actual_get_transfer', 'actual_search_transfers',
+      'actual_find_possible_transfers', 'actual_find_possible_duplicates', 'actual_get_account_reconciliation'
+    ]) expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true
+    });
+    expect(tools.find(tool => tool.name === 'actual_create_transfer')?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: false, idempotentHint: false
+    });
     expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: false, idempotentHint: true
     });
@@ -196,6 +229,13 @@ describe('MCP server contract', () => {
       { name: 'actual_import_transactions', arguments: { accountId: 'a1', transactions: [{ date: '2026-08-29', amount: -1299, imported_id: 'provider:1' }] } },
       { name: 'actual_update_transaction', arguments: { transactionId: 't1', fields: { notes: 'Explicit note' } } },
       { name: 'actual_delete_transaction', arguments: { transactionId: 't1', confirmDestructive: true } },
+      { name: 'actual_list_transfer_payees', arguments: {} },
+      { name: 'actual_get_transfer', arguments: { transactionId: 'ta' } },
+      { name: 'actual_search_transfers', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } },
+      { name: 'actual_create_transfer', arguments: { fromAccountId: 'a1', toAccountId: 'a2', amount: 100, date: '2026-08-01' } },
+      { name: 'actual_find_possible_transfers', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } },
+      { name: 'actual_find_possible_duplicates', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } },
+      { name: 'actual_get_account_reconciliation', arguments: { accountId: 'a1', cutoff: '2026-08-31' } },
       { name: 'actual_create_account', arguments: { name: 'Savings', initialBalance: -12030 } },
       { name: 'actual_update_account', arguments: { accountId: 'a1', name: 'Checking' } },
       { name: 'actual_close_account', arguments: { accountId: 'a1' } },

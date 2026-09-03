@@ -18,6 +18,12 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     ]) expect(declarations).toContain(`function ${method}(`);
     expect(models).toContain('balance_current?: number | null');
     expect(models).toContain("Pick<PayeeEntity, 'id' | 'name' | 'transfer_acct'>");
+    expect(declarations).toContain("function addTransactions(accountId: APIAccountEntity['id'], transactions: Omit<ImportTransactionEntity, 'account'>[], { learnCategories, runTransfers }?: {");
+    expect(declarations).toContain('runTransfers?: boolean');
+    expect(declarations).toContain('): Promise<"ok">;');
+    expect(declarations).toContain("function importTransactions(accountId: APIAccountEntity['id'], transactions: ImportTransactionEntity[], opts?: ImportTransactionsOpts)");
+    expect(declarations).toContain("function deleteTransaction(id: TransactionEntity['id']): Promise<TransactionEntity[]>");
+    expect(declarations).toContain("function getAccountBalance(id: APIAccountEntity['id'], cutoff?: Date): Promise<number>");
     expect(declarations).toContain("updateRule(rule: RuleEntity)");
     expect(declarations).toContain("deleteRule(id: RuleEntity['id']): Promise<boolean>");
     expect(ruleModels).toContain("stage: 'pre' | null | 'post'");
@@ -71,5 +77,34 @@ describe('@actual-app/api 26.8.1 exported structural surface', () => {
     expect(implementation).toContain('app$5.method("rules-run", runRules);');
     expect(exportBlock).not.toMatch(/exports\.(?:runRules|previewRule|getRule)\s*=/);
     expect(exportBlock).not.toMatch(/exports\.[A-Za-z]*[Pp]review[A-Za-z]*\s*=/);
+  });
+
+  it('keeps transfer creation public while unsupported relationship and reconciliation mutations stay private', async () => {
+    const declarations = await readFile('node_modules/@actual-app/api/@types/methods.d.ts', 'utf8');
+    const apiModels = await readFile('node_modules/@actual-app/core/@types/src/server/api-models.d.ts', 'utf8');
+    const importModel = await readFile('node_modules/@actual-app/core/@types/src/types/models/import-transaction.d.ts', 'utf8');
+    const options = await readFile('node_modules/@actual-app/core/@types/src/types/api-handlers.d.ts', 'utf8');
+    const implementation = await readFile('node_modules/@actual-app/api/dist/index.js', 'utf8');
+    const exportBlock = implementation.slice(implementation.lastIndexOf('//#region index.ts'));
+
+    expect(importModel).toContain('payee?: string | null');
+    expect(importModel).toContain('In a create/import request, this overrides payee_name.');
+    expect(importModel).toContain('transfer_id?: string');
+    expect(options).not.toContain('payeeNameNormalization');
+    expect(apiModels).not.toContain('last_reconciled');
+    expect(implementation).toContain('app.method("transactions-merge"');
+    expect(implementation).toContain('transfer_id: transaction.id');
+    expect(exportBlock).not.toMatch(/exports\.(?:mergeTransactions|linkTransactions|setTransfers|lockReconciliation|unlockReconciliation)\s*=/);
+    expect(declarations).not.toMatch(/function (?:mergeTransactions|linkTransactions|setTransfers|lockReconciliation|unlockReconciliation)\(/);
+  });
+
+  it('pins the wrapper forwarding and installed defaults used for transfer creation and cutoff balances', async () => {
+    const implementation = await readFile('node_modules/@actual-app/api/dist/index.js', 'utf8');
+    expect(implementation).toContain('function addTransactions(accountId, transactions, { learnCategories = false, runTransfers = false } = {})');
+    expect(implementation).toContain('runTransfers\n\t});');
+    expect(implementation).toContain('function getAccountBalance(id, cutoff)');
+    expect(implementation).toContain('cutoff\n\t});');
+    expect(implementation).toContain('function deleteTransaction(id)');
+    expect(implementation).toContain('return send("api/transaction-delete", { id });');
   });
 });

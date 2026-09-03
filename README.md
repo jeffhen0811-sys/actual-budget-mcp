@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.5.0 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.6.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Forty-six read, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
+- Fifty-three read, transfer, diagnostic, reconciliation, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -93,6 +93,13 @@ All amounts use Actual's integer minor-unit representation: for example, `12030`
 | `actual_import_transactions` | `accountId`, `transactions`, optional supported options/fingerprint | Imports 1–500 items through reconciliation; every item requires `date`, integer `amount`, and `imported_id`. |
 | `actual_update_transaction` | `transactionId`, `fields` | Updates one or more of `category`, `payee`, `notes`, `cleared`, `date`, and `amount`. |
 | `actual_delete_transaction` | `transactionId`, `confirmDestructive: true` | Permanently deletes a transaction after explicit confirmation. |
+| `actual_list_transfer_payees` | `{}` | Lists official transfer payees and exact destination-account metadata. |
+| `actual_get_transfer` | `transactionId` | Returns both observed reciprocal sides, a stable pair key, direction when valid, and integrity reason codes. |
+| `actual_search_transfers` | bounded dates plus typed filters | Assembles and filters pairs before deterministic pagination; either side may make a pair eligible. |
+| `actual_create_transfer` | accounts, positive `amount`, `date`, optional side state | Previews by default; execution requires `dryRun: false` and `confirmWrite: true`. |
+| `actual_find_possible_transfers` | bounded dates, window, filters | Reports unique or ambiguous opposite-amount cross-account candidates without linking them. |
+| `actual_find_possible_duplicates` | bounded dates, window, filters | Reports strong or likely same-account candidates without merging or deleting them. |
+| `actual_get_account_reconciliation` | `accountId`, optional cutoff/statement | Returns split-safe ledger, cleared, reconciled, uncleared, statement, and separate bank-balance evidence. |
 
 Example read input:
 
@@ -117,7 +124,7 @@ Imports default to `defaultCleared: true` and `reimportDeleted: false`. A repeat
 
 All transaction amounts remain signed integers in Actual's minor-unit representation. An expense such as USD 12.99 is `-1299`; the search compiler compares `-1299` directly and never converts it to an absolute spending magnitude.
 
-`actual_search_transactions` requires `startDate` and `endDate` in `YYYY-MM-DD` form and limits the inclusive interval to 366 days. It accepts exact account, transaction, payee, and category ID lists; `uncategorizedOnly`; `manual` or `imported` source; cleared state; signed `minAmount`/`maxAmount`; and literal text across resolved payee name, imported payee, and notes. `%`, `?`, and backslash in text are literals rather than caller-controlled wildcards. No raw ActualQL, query object, expression, regex, SQL, or SQLite access is public.
+`actual_search_transactions` requires `startDate` and `endDate` in `YYYY-MM-DD` form and limits the inclusive interval to 366 days. It accepts exact account, transaction, payee, and category ID lists; `uncategorizedOnly`; `manual` or `imported` source; `transferState` (`any`, `transfer`, or `non-transfer`); cleared state; signed `minAmount`/`maxAmount`; and literal text across resolved payee name, imported payee, and notes. `%`, `?`, and backslash in text are literals rather than caller-controlled wildcards. No raw ActualQL, query object, expression, regex, SQL, or SQLite access is public.
 
 Search defaults to `limit: 100`, allows at most 250 items, and accepts offsets from 0 through 10,000. Sort enums cover date, amount, payee, and category in both directions; transaction ID is always the final deterministic tie-breaker. `splitMode: "inline"` is the default and returns ordinary transactions plus split children while omitting split parents. `splitMode: "grouped"` returns each matching group once with nested children. Exact count and signed amount totals are supported only for inline mode; grouped requests explicitly report totals as unsupported.
 
@@ -137,7 +144,7 @@ Search defaults to `limit: 100`, allows at most 250 items, and accepts offsets f
 }
 ```
 
-Bulk update items can independently request desired `category`, `payee`, `notes`, and `cleared` states. Omitted fields are unchanged. `dryRun` defaults to `true`; execution requires both `dryRun: false` and `confirmWrite: true`. The complete batch is preflighted before writes, unchanged items are skipped, local updates run serially, one synchronization follows, and every requested ID is read back. All split parents and children are protected. Transfer transactions permit only an independent `cleared` change. Category/payee null clearing is rejected in v0.5.0 because the pinned contract has not passed every required declaration, bundle, and controlled-server proof; note clearing is supported with explicit `null`.
+Bulk update items can independently request desired `category`, `payee`, `notes`, and `cleared` states. Omitted fields are unchanged. `dryRun` defaults to `true`; execution requires both `dryRun: false` and `confirmWrite: true`. The complete batch is preflighted before writes, unchanged items are skipped, local updates run serially, one synchronization follows, and every requested ID is read back. All split parents and children are protected. Transfer transactions permit only an exact independent `cleared` desired state; category, payee, notes, date, amount, and relationship widening remain blocked. Category/payee null clearing remains conservatively rejected; note clearing is supported with explicit `null`.
 
 ```json
 {
@@ -148,7 +155,17 @@ Bulk update items can independently request desired `category`, `payee`, `notes`
 }
 ```
 
-Import preview accepts the same import items and supported `defaultCleared`/`reimportDeleted` options as execution, but it has no `dryRun` switch and never synchronizes. Generated would-add IDs are labeled `previewOnlyIds`; they are not persisted transaction IDs and must not be cleanup targets. The returned `requestFingerprint` is a versioned SHA-256 hash of normalized account, supported options, and ordered transactions. Passing it as `expectedPreviewFingerprint` proves request equality only—it is not a budget-state lock.
+Import preview accepts the same import items, optional existing `payee` IDs, and supported `defaultCleared`/`reimportDeleted` options as execution, but it has no `dryRun` switch and never synchronizes. A supplied payee is validated before the SDK call and takes precedence over `payee_name`; an official transfer payee lets Actual's reconciliation pipeline determine the observed reciprocal outcome. Generated would-add IDs are labeled `previewOnlyIds`; they are not persisted transaction IDs and must not be cleanup targets. The returned `requestFingerprint` is a versioned SHA-256 hash of normalized account, supported options, payee IDs, and ordered transactions. Passing it as `expectedPreviewFingerprint` proves request equality only—it is not a budget-state lock.
+
+## Transfers and diagnostics
+
+A canonical transfer is two transactions in different accounts with reciprocal `transfer_id` values and non-zero opposite integer amounts of equal magnitude. `pairKey` and diagnostic `candidateKey` values are deterministic `v1:` SHA-256 identifiers for the unordered opaque ID pair. Broken historical relationships are returned as observed, with a nullable missing side and reason codes; the server never fabricates or repairs data.
+
+Manual transfer creation validates two distinct open accounts, the official transfer payees, a positive safe-integer amount, category placement, date, and independent cleared states. Transfers between accounts with the same on/off-budget status prohibit a category. A mixed on/off-budget transfer requires an expense category, placed only on the on-budget side. Preview is pure. Confirmed execution uses `addTransactions(..., { runTransfers: true })`, discovers the exact new ID set, applies needed side-specific clear state, synchronizes once, and verifies both rows. After creation may have begun, failures report the last phase and known IDs; they are never retried or rolled back automatically. Safely recover by synchronizing, reading the known exact IDs, and deleting only a verified run-owned pair.
+
+Transfer and diagnostic searches accept at most 366 inclusive days, default to 100 results, cap pages at 250, and cap offsets at 10,000. Candidate tools accept a zero-to-seven-day window (default three) and scan at most 5,000 eligible leaf transactions; overflow fails instead of truncating. Possible transfers require different accounts and exact opposite amounts, with graph degree deciding `UNIQUE` versus `AMBIGUOUS`. Possible duplicates require the same account and signed amount plus a matching imported ID or meaningful payee evidence, producing `STRONG` or `LIKELY`. Candidates are evidence only: no linking, merge, deletion, or automatic acceptance is available.
+
+Reconciliation counts ordinary transactions, split children, and starting-balance leaves while excluding split parents. Reconciled rows are included in cleared state; uncleared equals ledger minus cleared and is independently cross-checked. The ledger is also checked against public cutoff-aware `getAccountBalance`. Optional statement differences are signed as statement minus ledger/cleared. Optional `balance_current` is labeled bank-reported metadata and never substitutes for a statement or changes status. The tool does not lock, unlock, clear, synchronize, or infer a last-reconciled date.
 
 Recommended safe import workflow:
 
@@ -415,13 +432,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.5.0 .
+docker build -t actual-budget-mcp:0.6.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.5.0
+  actual-budget-mcp:0.6.0
 ```
 
 ## Security
@@ -447,4 +464,4 @@ docker run --rm -i \
 
 ## Scope
 
-Version 0.5.0 does not include Account Groups, reorder operations, public/raw ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.
+Version 0.6.0 does not include Account Groups, reorder operations, public/raw ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, linking or merging transactions, reconciliation mutation, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.

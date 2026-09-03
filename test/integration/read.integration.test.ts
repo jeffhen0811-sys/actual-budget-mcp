@@ -7,6 +7,9 @@ import {
   budgetMonthOutputSchema,
   budgetSummaryOutputSchema,
   categoriesOutputSchema,
+  accountReconciliationOutputSchema,
+  findPossibleDuplicatesOutputSchema,
+  findPossibleTransfersOutputSchema,
   healthOutputSchema,
   listBudgetMonthsOutputSchema,
   payeesOutputSchema,
@@ -14,6 +17,8 @@ import {
   rulesOutputSchema,
   searchTransactionsInputSchema,
   searchTransactionsOutputSchema,
+  searchTransfersOutputSchema,
+  transferPayeesOutputSchema,
   transactionOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
@@ -225,5 +230,31 @@ realDescribe.sequential('real Actual read integration', () => {
     }));
     const totalsMs = Math.round(performance.now() - startedTotals);
     console.info(`advanced-search observation: returned=${page.page.returned} pageMs=${pageMs} totalsMs=${totalsMs}`);
+  });
+
+  it('reads transfer payees, transfer search, diagnostics, and reconciliation without mutation', async () => {
+    const transferPayees = await client.listTransferPayees();
+    expect(() => transferPayeesOutputSchema.parse({ transferPayees })).not.toThrow();
+    expect(transferPayees.length).toBeGreaterThan(0);
+    const searchInput = {
+      startDate: '2026-08-01', endDate: '2026-08-31', limit: 100, offset: 0
+    };
+    const transfers = await client.searchTransfers(searchInput);
+    expect(() => searchTransfersOutputSchema.parse(transfers)).not.toThrow();
+    if (transfers.transfers[0]?.transactionA) {
+      const exact = await client.getTransfer(transfers.transfers[0].transactionA.id);
+      expect(exact.pairKey).toBe(transfers.transfers[0].pairKey);
+    }
+    const possibleTransfers = await client.findPossibleTransfers({ ...searchInput, dateWindowDays: 3 });
+    const possibleDuplicates = await client.findPossibleDuplicates({ ...searchInput, dateWindowDays: 3 });
+    expect(() => findPossibleTransfersOutputSchema.parse(possibleTransfers)).not.toThrow();
+    expect(() => findPossibleDuplicatesOutputSchema.parse(possibleDuplicates)).not.toThrow();
+    const repeated = await client.findPossibleDuplicates({ ...searchInput, dateWindowDays: 3 });
+    expect(repeated.candidates.map(item => item.candidateKey)).toEqual(possibleDuplicates.candidates.map(item => item.candidateKey));
+
+    const account = (await client.listAccounts()).find(item => item.name === REQUIRED_TEST_ACCOUNT_NAME)!;
+    const reconciliation = await client.getAccountReconciliation(account.id, '2026-08-31');
+    expect(() => accountReconciliationOutputSchema.parse(reconciliation)).not.toThrow();
+    expect(reconciliation.balances.uncleared).toBe(reconciliation.balances.ledger - reconciliation.balances.cleared);
   });
 });

@@ -32,6 +32,8 @@ import {
 import { FifoQueue } from './queue.js';
 import {
   compileExactTransaction,
+  compileBoundedLeafTransactions,
+  compileTransferRelationship,
   compileTransactionsByIds,
   compileTransactionSearch,
   compileTransactionTotal,
@@ -40,6 +42,23 @@ import {
   projectTransaction,
   type TransactionSearchRequest
 } from './transactions.js';
+import {
+  assembleTransferPair,
+  compareTransferPairs,
+  meaningfulId,
+  type CreateTransferRequest,
+  type TransferPair,
+  type TransferSearchRequest
+} from './transfers.js';
+import {
+  findPossibleDuplicateCandidates,
+  findPossibleTransferCandidates,
+  sortDiagnosticCandidates,
+  type DiagnosticSearchRequest,
+  type DuplicateClassification,
+  type PossibleTransferClassification
+} from './transaction-diagnostics.js';
+import { aggregateReconciliation } from './reconciliation.js';
 import {
   budgetModeCapability,
   findBudgetCategory,
@@ -681,6 +700,309 @@ export class ActualClient {
     });
   }
 
+  listTransferPayees() {
+    const operation = 'actual_list_transfer_payees';
+    return this.run(operation, async () => {
+      const [payees, accounts] = await Promise.all([this.api.getTransferPayees(), this.api.getAccounts()]);
+      const byAccount = new Map(accounts.map(account => [account.id, account]));
+      return payees.map(payee => {
+        const accountId = meaningfulId(payee.transfer_acct);
+        const account = accountId ? byAccount.get(accountId) : undefined;
+        if (!accountId || !account) throw new PublicError(
+          'QUERY_SHAPE_INVALID',
+          'Actual returned a transfer payee whose destination account could not be resolved.',
+          operation,
+          false,
+          { entity: { type: 'payee', id: payee.id, name: payee.name } }
+        );
+        return {
+          id: payee.id,
+          name: payee.name,
+          accountId: account.id,
+          accountName: account.name,
+          accountClosed: account.closed ?? false,
+          accountOffBudget: account.offbudget ?? false
+        };
+      }).sort((a, b) => a.accountName.localeCompare(b.accountName, 'en', { sensitivity: 'base' }) || a.id.localeCompare(b.id));
+    });
+  }
+
+  getTransfer(transactionId: string) {
+    const operation = 'actual_get_transfer';
+    return this.run(operation, async () => {
+      const initial = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId])), operation)
+        .find(row => row.id === transactionId);
+      if (!initial) throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false, {
+        entity: { type: 'transaction', id: transactionId }
+      });
+      const counterpartId = meaningfulId(initial.transfer_id);
+      if (!counterpartId) throw new PublicError('NOT_A_TRANSFER', 'The requested transaction is not a transfer.', operation, false, {
+        entity: { type: 'transaction', id: transactionId }
+      });
+      const rows = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId, counterpartId])), operation);
+      return assembleTransferPair(rows.find(row => row.id === transactionId) ?? initial, rows.find(row => row.id === counterpartId));
+    });
+  }
+
+  searchTransfers(input: TransferSearchRequest) {
+    const operation = 'actual_search_transfers';
+    return this.run(operation, async () => {
+      const seedRows = parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
+        startDate: input.startDate,
+        endDate: input.endDate,
+        limit: 5_001,
+        includeSplitChildren: false
+      })), operation);
+      if (seedRows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', 'Transfer search requires more than 5000 transaction rows.', operation, false
+      );
+      const eligibleSeeds = seedRows.filter(row => meaningfulId(row.transfer_id) !== null &&
+        (!input.accountIds?.length || input.accountIds.includes(row.account)));
+      const ids = [...new Set(eligibleSeeds.flatMap(row => [row.id, meaningfulId(row.transfer_id)!]))];
+      const allRows = ids.length
+        ? parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(ids)), operation)
+        : [];
+      const byId = new Map(allRows.map(row => [row.id, row]));
+      const pairMap = new Map<string, TransferPair>();
+      for (const seed of eligibleSeeds) {
+        const counterpart = byId.get(meaningfulId(seed.transfer_id)!);
+        const pair = assembleTransferPair(seed, counterpart);
+        if (!pairMap.has(pair.pairKey)) pairMap.set(pair.pairKey, pair);
+      }
+      const pairs = [...pairMap.values()].filter(pair => {
+        const magnitude = pair.magnitude ?? Math.abs(pair.transactionA?.amount ?? pair.transactionB?.amount ?? 0);
+        return (input.minMagnitude === undefined || magnitude >= input.minMagnitude) &&
+          (input.maxMagnitude === undefined || magnitude <= input.maxMagnitude) &&
+          ((input.integrity ?? 'any') === 'any' || pair.integrity === input.integrity);
+      }).sort((a, b) => compareTransferPairs(a, b, input.sort));
+      return {
+        transfers: pairs.slice(input.offset, input.offset + input.limit),
+        counts: {
+          matched: pairs.length,
+          valid: pairs.filter(pair => pair.integrity === 'VALID').length,
+          invalid: pairs.filter(pair => pair.integrity === 'INVALID').length
+        },
+        page: { limit: input.limit, offset: input.offset, returned: Math.max(0, Math.min(input.limit, pairs.length - input.offset)) }
+      };
+    });
+  }
+
+  createTransfer(input: CreateTransferRequest) {
+    const operation = 'actual_create_transfer';
+    return this.run(operation, async () => {
+      if (!Number.isSafeInteger(input.amount) || input.amount <= 0) throw new PublicError(
+        'INCOMPATIBLE_FILTERS', 'Transfer amount must be a positive safe integer in minor units.', operation, false
+      );
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(input.date) || Number.isNaN(Date.parse(`${input.date}T00:00:00Z`))) throw new PublicError(
+        'INCOMPATIBLE_FILTERS', 'Transfer date must be a valid YYYY-MM-DD calendar date.', operation, false
+      );
+      const dryRun = input.dryRun ?? true;
+      if (!dryRun && input.confirmWrite !== true) throw new PublicError(
+        'WRITE_CONFIRMATION_REQUIRED', 'Set confirmWrite to true together with dryRun false to create a transfer.', operation, false
+      );
+      const [accounts, payees, categories] = await Promise.all([
+        this.api.getAccounts(), this.api.getTransferPayees(), this.api.getCategories()
+      ]);
+      const from = accounts.find(account => account.id === input.fromAccountId);
+      const to = accounts.find(account => account.id === input.toAccountId);
+      if (!from || !to) throw new PublicError('NOT_FOUND', 'One or both transfer accounts were not found.', operation, false);
+      if (from.id === to.id) throw new PublicError('INCOMPATIBLE_FILTERS', 'Transfer accounts must be different.', operation, false);
+      if (from.closed || to.closed) throw new PublicError('PROTECTED_ACTUAL_ENTITY', 'Transfers cannot use a closed account.', operation, false);
+      const mixedBudget = Boolean(from.offbudget) !== Boolean(to.offbudget);
+      const category = input.categoryId === undefined ? undefined : categories.find(item => item.id === input.categoryId);
+      if (mixedBudget && (!category || category.is_income === true)) throw new PublicError(
+        'INVALID_REFERENCE', 'A valid expense category is required for a transfer between on-budget and off-budget accounts.', operation, false
+      );
+      if (!mixedBudget && input.categoryId !== undefined) throw new PublicError(
+        'INCOMPATIBLE_FILTERS', 'A category is not allowed when both transfer accounts have the same budget status.', operation, false
+      );
+      const transferPayeeFor = (accountId: string) => payees.find(payee => meaningfulId(payee.transfer_acct) === accountId);
+      const anchorIsFrom = !mixedBudget || !from.offbudget;
+      const anchor = anchorIsFrom ? from : to;
+      const destination = anchorIsFrom ? to : from;
+      const anchorPayee = transferPayeeFor(destination.id);
+      const counterpartPayee = transferPayeeFor(anchor.id);
+      if (!anchorPayee || !counterpartPayee) throw new PublicError(
+        'TRANSFER_ACCOUNT_REQUIRED', 'Actual did not expose transfer payees for both accounts.', operation, false
+      );
+      const fromSide = {
+        accountId: from.id, amount: -input.amount, payeeId: transferPayeeFor(to.id)!.id,
+        categoryId: mixedBudget && !from.offbudget ? input.categoryId! : null,
+        cleared: input.fromCleared ?? false,
+        ...(input.notes === undefined ? {} : { notes: input.notes })
+      };
+      const toSide = {
+        accountId: to.id, amount: input.amount, payeeId: transferPayeeFor(from.id)!.id,
+        categoryId: mixedBudget && !to.offbudget ? input.categoryId! : null,
+        cleared: input.toCleared ?? false,
+        ...(input.notes === undefined ? {} : { notes: input.notes })
+      };
+      const preview = {
+        dryRun,
+        executed: false,
+        synchronized: false,
+        verified: false,
+        phase: 'preflight' as const,
+        anchorAccountId: anchor.id,
+        fromSide,
+        toSide,
+        pair: null as TransferPair | null
+      };
+      if (dryRun) return preview;
+
+      const readDateRows = async () => parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
+        startDate: input.date, endDate: input.date, accountIds: [from.id, to.id], limit: 5_001, includeSplitChildren: false
+      })), operation);
+      const before = await readDateRows();
+      if (before.length > MAX_TRANSACTION_RESULTS) throw new PublicError('RESULT_LIMIT_EXCEEDED', 'Transfer creation discovery exceeds 5000 rows.', operation, false);
+      let phase: 'preflight' | 'created_unverified' | 'pair_discovered' | 'side_updates_applied' | 'synchronized' | 'verified' = 'preflight';
+      const knownIds: string[] = [];
+      const partial = (message: string, cause: unknown) => new PublicError(
+        'TRANSFER_CREATION_PARTIAL_STATE', message, operation, false,
+        { partialState: true, recoveryAction: 'actual_sync_then_exact_read', details: { phase, knownIds: [...knownIds] } }, { cause }
+      );
+      try {
+        const anchorSide = anchorIsFrom ? fromSide : toSide;
+        await this.api.addTransactions(anchor.id, [{
+          date: input.date,
+          amount: anchorSide.amount,
+          payee: anchorPayee.id,
+          ...(anchorSide.categoryId === null ? {} : { category: anchorSide.categoryId }),
+          ...(input.notes === undefined ? {} : { notes: input.notes }),
+          cleared: anchorSide.cleared
+        }], { runTransfers: true });
+        phase = 'created_unverified';
+        const beforeIds = new Set(before.map(row => row.id));
+        const added = (await readDateRows()).filter(row => !beforeIds.has(row.id));
+        for (const row of added) knownIds.push(row.id);
+        if (added.length !== 2 || new Set(added.map(row => row.account)).size !== 2) throw new Error('Exact created pair could not be identified.');
+        const pair = assembleTransferPair(added[0]!, added.find(row => row.id === meaningfulId(added[0]!.transfer_id)));
+        if (pair.integrity !== 'VALID') throw new Error('Created rows are not a valid reciprocal transfer pair.');
+        phase = 'pair_discovered';
+        const requestedByAccount = new Map([[from.id, fromSide], [to.id, toSide]]);
+        for (const side of [pair.transactionA!, pair.transactionB!]) {
+          const desired = requestedByAccount.get(side.account)!;
+          if (side.cleared !== desired.cleared) await this.api.updateTransaction(side.id, { cleared: desired.cleared });
+        }
+        phase = 'side_updates_applied';
+        await this.api.sync();
+        phase = 'synchronized';
+        const persisted = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(knownIds)), operation);
+        if (persisted.length !== 2) throw new Error('Created transfer could not be read back after synchronization.');
+        const verifiedPair = assembleTransferPair(persisted[0]!, persisted.find(row => row.id === meaningfulId(persisted[0]!.transfer_id)));
+        if (verifiedPair.integrity !== 'VALID') throw new Error('Created transfer failed reciprocal verification.');
+        for (const side of [verifiedPair.transactionA!, verifiedPair.transactionB!]) {
+          const desired = requestedByAccount.get(side.account);
+          if (!desired || side.amount !== desired.amount || side.cleared !== desired.cleared || (side.category ?? null) !== desired.categoryId) {
+            throw new Error('Created transfer state does not match the requested plan.');
+          }
+        }
+        phase = 'verified';
+        return { ...preview, dryRun: false, executed: true, synchronized: true, verified: true, phase, pair: verifiedPair };
+      } catch (error) {
+        if (phase === 'preflight') throw error;
+        throw partial('Transfer creation may have changed Actual state and was not automatically retried or rolled back.', error);
+      }
+    });
+  }
+
+  findPossibleTransfers(input: DiagnosticSearchRequest<PossibleTransferClassification>) {
+    return this.runDiagnosticSearch('actual_find_possible_transfers', input, findPossibleTransferCandidates).then(result => ({
+      ...result,
+      counts: { matched: result.counts.matched, unique: result.counts.primary, ambiguous: result.counts.secondary }
+    }));
+  }
+
+  findPossibleDuplicates(input: DiagnosticSearchRequest<DuplicateClassification>) {
+    return this.runDiagnosticSearch('actual_find_possible_duplicates', input, findPossibleDuplicateCandidates).then(result => ({
+      ...result,
+      counts: { matched: result.counts.matched, strong: result.counts.primary, likely: result.counts.secondary }
+    }));
+  }
+
+  private runDiagnosticSearch<T extends { classification: string; candidateKey: string; transactionA: AdapterTransaction }>(
+    operation: 'actual_find_possible_transfers' | 'actual_find_possible_duplicates',
+    input: DiagnosticSearchRequest<string>,
+    classify: (rows: readonly AdapterTransaction[], dateWindowDays: number) => T[]
+  ) {
+    return this.run(operation, async () => {
+      const rows = parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
+        startDate: input.startDate,
+        endDate: input.endDate,
+        limit: 5_001,
+        includeSplitChildren: false
+      })), operation);
+      if (rows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', 'Complete diagnostic classification requires more than 5000 eligible transactions.', operation, false
+      );
+      const classified = classify(rows, input.dateWindowDays);
+      const eligible = classified.filter(candidate => {
+        const counterpart = 'transactionB' in candidate ? candidate.transactionB as AdapterTransaction : undefined;
+        const accounts = [candidate.transactionA.account, counterpart?.account];
+        const magnitude = Math.abs(candidate.transactionA.amount);
+        return (!input.accountIds?.length || accounts.some(account => account !== undefined && input.accountIds!.includes(account))) &&
+          (input.minMagnitude === undefined || magnitude >= input.minMagnitude) &&
+          (input.maxMagnitude === undefined || magnitude <= input.maxMagnitude);
+      });
+      const counts = {
+        matched: eligible.length,
+        primary: eligible.filter(candidate => candidate.classification === 'UNIQUE' || candidate.classification === 'STRONG').length,
+        secondary: eligible.filter(candidate => candidate.classification === 'AMBIGUOUS' || candidate.classification === 'LIKELY').length
+      };
+      const filtered = eligible.filter(candidate => (input.classification ?? 'any') === 'any' || candidate.classification === input.classification);
+      const sorted = sortDiagnosticCandidates(filtered, input.sort);
+      const candidates = sorted.slice(input.offset, input.offset + input.limit);
+      return {
+        candidates,
+        counts,
+        page: { limit: input.limit, offset: input.offset, returned: candidates.length }
+      };
+    });
+  }
+
+  getAccountReconciliation(accountId: string, cutoff?: string, statementBalance?: number) {
+    const operation = 'actual_get_account_reconciliation';
+    return this.run(operation, async () => {
+      const resolvedCutoff = cutoff ?? (() => {
+        const now = new Date();
+        const year = String(now.getFullYear()).padStart(4, '0');
+        const month = String(now.getMonth() + 1).padStart(2, '0');
+        const day = String(now.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      })();
+      const account = (await this.api.getAccounts()).find(item => item.id === accountId);
+      if (!account) throw new PublicError('NOT_FOUND', 'The requested account was not found.', operation, false, {
+        entity: { type: 'account', id: accountId }
+      });
+      const [rowsResult, publicBalance] = await Promise.all([
+        this.api.aqlQuery(compileBoundedLeafTransactions({
+          startDate: '0001-01-01', endDate: resolvedCutoff, accountIds: [accountId], limit: 5_001, includeSplitChildren: true
+        })),
+        this.api.getAccountBalance(accountId, new Date(`${resolvedCutoff}T00:00:00`))
+      ]);
+      const rows = parseAqlRows(rowsResult, operation);
+      if (rows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', 'Reconciliation requires more than 5000 leaf transactions.', operation, false
+      );
+      const aggregate = aggregateReconciliation(rows, statementBalance);
+      if (aggregate.balances.ledger !== publicBalance) throw new PublicError(
+        'QUERY_SHAPE_INVALID', 'Canonical ledger sum disagrees with Actual account balance for the cutoff.', operation, false,
+        { details: { accountId, cutoff: resolvedCutoff, canonicalLedger: aggregate.balances.ledger, publicBalance } }
+      );
+      return {
+        account: { id: account.id, name: account.name },
+        cutoff: resolvedCutoff,
+        ...aggregate,
+        ...(typeof account.balance_current === 'number' && Number.isSafeInteger(account.balance_current) ? {
+          bankReported: {
+            balanceCurrent: account.balance_current,
+            differenceFromLedger: account.balance_current - aggregate.balances.ledger
+          }
+        } : {})
+      };
+    });
+  }
+
   searchTransactions(input: TransactionSearchRequest) {
     const operation = 'actual_search_transactions';
     return this.run(operation, async () => {
@@ -866,6 +1188,15 @@ export class ActualClient {
     const operation = 'actual_import_transactions';
     return this.run(operation, async () => {
       const request = normalizeImportRequest(accountId, transactions, options);
+      const payeeIds = [...new Set(request.transactions.flatMap(transaction => transaction.payee === undefined ? [] : [transaction.payee]))];
+      if (payeeIds.length) {
+        const known = new Set((await this.api.getPayees()).map(payee => payee.id));
+        const invalidPayeeIds = payeeIds.filter(id => !known.has(id));
+        if (invalidPayeeIds.length) throw new PublicError(
+          'INVALID_REFERENCE', 'Every supplied import payee must resolve exactly before import.', operation, false,
+          { details: { invalidPayeeIds } }
+        );
+      }
       const requestFingerprint = importRequestFingerprint(request);
       if (expectedPreviewFingerprint !== undefined && expectedPreviewFingerprint !== requestFingerprint) {
         throw new PublicError('PREVIEW_FINGERPRINT_MISMATCH', 'The import request does not match the reviewed preview request.', operation, false);
@@ -905,6 +1236,15 @@ export class ActualClient {
     const operation = 'actual_preview_import';
     return this.run(operation, async () => {
       const request = normalizeImportRequest(accountId, transactions, options);
+      const payeeIds = [...new Set(request.transactions.flatMap(transaction => transaction.payee === undefined ? [] : [transaction.payee]))];
+      if (payeeIds.length) {
+        const known = new Set((await this.api.getPayees()).map(payee => payee.id));
+        const invalidPayeeIds = payeeIds.filter(id => !known.has(id));
+        if (invalidPayeeIds.length) throw new PublicError(
+          'INVALID_REFERENCE', 'Every supplied preview payee must resolve exactly before preview.', operation, false,
+          { details: { invalidPayeeIds } }
+        );
+      }
       const requestFingerprint = importRequestFingerprint(request);
       const result = parseImportResult(await this.api.importTransactions(accountId, request.transactions, {
         ...request.options,
@@ -934,22 +1274,107 @@ export class ActualClient {
   }
 
   updateTransaction(transactionId: string, fields: Partial<AdapterTransaction>) {
-    return this.mutate('actual_update_transaction', async () => {
+    const operation = 'actual_update_transaction';
+    return this.run(operation, async () => {
+      const rows = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId])), operation);
+      const before = rows.find(row => row.id === transactionId);
+      if (!before) throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
+      const counterpartId = meaningfulId(before.transfer_id);
+      let pair: TransferPair | null = null;
+      if (counterpartId) {
+        const pairRows = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId, counterpartId])), operation);
+        pair = assembleTransferPair(pairRows.find(row => row.id === transactionId) ?? before, pairRows.find(row => row.id === counterpartId));
+        if (pair.integrity !== 'VALID') throw new PublicError(
+          'TRANSFER_INTEGRITY_FAILED', 'The transfer relationship is inconsistent and cannot be updated safely.', operation, false,
+          { details: { transactionId, counterpartTransactionId: counterpartId, reasonCodes: pair.reasonCodes } }
+        );
+      }
       const updated = await this.api.updateTransaction(transactionId, fields);
       if (Array.isArray(updated) && updated.length === 0) {
-        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', 'actual_update_transaction', false);
+        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
       }
-      return { success: true as const, transactionId };
+      try { await this.api.sync(); }
+      catch (error) { throw new PublicError(
+        'MUTATION_SYNC_FAILED', 'The local change succeeded, but synchronization failed. Run actual_sync before retrying the mutation.', operation, false,
+        { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true }, { cause: error }
+      ); }
+      const readIds = pair ? [transactionId, counterpartId!] : [transactionId];
+      let persisted: AdapterTransaction[];
+      try { persisted = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(readIds)), operation).map(row => projectTransaction(row, operation)); }
+      catch (error) { throw new PublicError(
+        'POST_MUTATION_READ_FAILED', 'The transaction synchronized but exact read-back failed.', operation, false,
+        { recoveryAction: 'actual_get_transaction', state: 'synchronized_but_unverified', partialState: true, details: { transactionId, affectedTransactionIds: readIds } }, { cause: error }
+      ); }
+      const target = persisted.find(row => row.id === transactionId);
+      if (!target || !Object.entries(fields).every(([key, value]) => target[key] === value)) throw new PublicError(
+        'POST_MUTATION_READ_FAILED', 'The transaction synchronized but the requested state could not be verified.', operation, false,
+        { recoveryAction: 'actual_get_transaction', state: 'synchronized_but_unverified', partialState: true, details: { transactionId, affectedTransactionIds: readIds } }
+      );
+      const mirroredFields: Array<'category' | 'payee' | 'notes' | 'cleared' | 'date' | 'amount'> = [];
+      if (pair) {
+        const beforeCounterpart = pair.transactionA?.id === counterpartId ? pair.transactionA : pair.transactionB;
+        const afterCounterpart = persisted.find(row => row.id === counterpartId);
+        for (const key of Object.keys(fields) as Array<keyof typeof fields>) {
+          if (['category', 'payee', 'notes', 'cleared', 'date', 'amount'].includes(String(key)) && beforeCounterpart?.[key] !== afterCounterpart?.[key]) {
+            mirroredFields.push(key as typeof mirroredFields[number]);
+          }
+        }
+      }
+      return {
+        success: true as const,
+        transactionId,
+        ...(pair ? { linkedTransferAffected: true, counterpartTransactionId: counterpartId!, mirroredFields } : {})
+      };
     });
   }
 
   deleteTransaction(transactionId: string) {
-    return this.mutate('actual_delete_transaction', async () => {
+    const operation = 'actual_delete_transaction';
+    return this.run(operation, async () => {
+      const rows = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId])), operation);
+      const before = rows.find(row => row.id === transactionId);
+      if (!before) throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
+      const counterpartId = meaningfulId(before.transfer_id);
+      if (counterpartId) {
+        const pairRows = parseAqlRows(await this.api.aqlQuery(compileTransferRelationship([transactionId, counterpartId])), operation);
+        const pair = assembleTransferPair(pairRows.find(row => row.id === transactionId) ?? before, pairRows.find(row => row.id === counterpartId));
+        if (pair.integrity !== 'VALID') throw new PublicError(
+          'TRANSFER_INTEGRITY_FAILED', 'The transfer relationship is inconsistent and cannot be deleted safely.', operation, false,
+          { details: { transactionId, counterpartTransactionId: counterpartId, reasonCodes: pair.reasonCodes } }
+        );
+      }
+      const affectedTransactionIds = counterpartId ? [transactionId, counterpartId].sort() : [transactionId];
       const deleted = await this.api.deleteTransaction(transactionId);
       if (Array.isArray(deleted) && deleted.length === 0) {
-        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', 'actual_delete_transaction', false);
+        throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
       }
-      return { success: true as const, transactionId };
+      try { await this.api.sync(); }
+      catch (error) { throw new PublicError(
+        'MUTATION_SYNC_FAILED', 'The local deletion may have succeeded, but synchronization failed.', operation, false,
+        { recoveryAction: 'actual_sync_then_exact_read', state: 'local_change_may_have_succeeded', partialState: true, details: { affectedTransactionIds } }, { cause: error }
+      ); }
+      let remaining: AdapterTransaction[];
+      try { remaining = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(affectedTransactionIds)), operation); }
+      catch (error) { throw new PublicError(
+        'POST_MUTATION_READ_FAILED', 'Deletion synchronized, but exact absence could not be verified.', operation, false,
+        { recoveryAction: 'actual_get_transaction', state: 'synchronized_but_unverified', partialState: true, details: { affectedTransactionIds } }, { cause: error }
+      ); }
+      if (counterpartId && remaining.some(row => affectedTransactionIds.includes(row.id))) {
+        try {
+          await this.api.sync();
+          remaining = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(affectedTransactionIds)), operation);
+        } catch (error) {
+          throw new PublicError(
+            'POST_MUTATION_READ_FAILED', 'Deletion synchronized, but the transfer cleanup refresh could not be verified.', operation, false,
+            { recoveryAction: 'actual_sync_then_exact_read', state: 'synchronized_but_unverified', partialState: true, details: { affectedTransactionIds } }, { cause: error }
+          );
+        }
+      }
+      if (remaining.some(row => affectedTransactionIds.includes(row.id))) throw new PublicError(
+        'POST_MUTATION_READ_FAILED', 'Deletion synchronized, but one or more affected transactions remain.', operation, false,
+        { recoveryAction: 'actual_get_transaction', state: 'synchronized_but_unverified', partialState: true, details: { affectedTransactionIds, remainingIds: remaining.map(row => row.id) } }
+      );
+      return { success: true as const, transactionId, affectedTransactionIds, deletedTransferPair: counterpartId !== null, verified: true };
     });
   }
 

@@ -61,6 +61,7 @@ export const transactionSchema: z.ZodType<AdapterTransaction> = (z.lazy(() => z.
   imported_id: nullableOptionalId,
   imported_payee: nullableOptionalText,
   transfer_id: nullableOptionalId,
+  isTransfer: z.boolean().optional(),
   cleared: z.boolean().optional(),
   reconciled: z.boolean().optional(),
   starting_balance_flag: z.boolean().optional(),
@@ -154,6 +155,7 @@ export const searchTransactionsInputSchema = z.object({
   categoryIds: uniqueIdListSchema.optional(),
   uncategorizedOnly: z.boolean().optional(),
   importSource: z.enum(['any', 'manual', 'imported']).default('any'),
+  transferState: z.enum(['any', 'transfer', 'non-transfer']).default('any'),
   cleared: z.boolean().optional(),
   minAmount: integerAmountSchema.optional(),
   maxAmount: integerAmountSchema.optional(),
@@ -199,6 +201,7 @@ export const importTransactionItemSchema = z
     date: isoDateSchema,
     amount: integerAmountSchema,
     imported_id: opaqueIdSchema,
+    payee: opaqueIdSchema.optional(),
     payee_name: boundedTextSchema.optional(),
     imported_payee: boundedTextSchema.optional(),
     notes: boundedTextSchema.optional(),
@@ -324,8 +327,166 @@ export const updateTransactionInputSchema = z.object({
 
 export const transactionMutationOutputSchema = z.object({
   success: z.literal(true),
-  transactionId: opaqueIdSchema
+  transactionId: opaqueIdSchema,
+  linkedTransferAffected: z.boolean().optional(),
+  counterpartTransactionId: opaqueIdSchema.optional(),
+  mirroredFields: z.array(z.enum(['category', 'payee', 'notes', 'cleared', 'date', 'amount'])).optional(),
+  affectedTransactionIds: z.array(opaqueIdSchema).optional(),
+  deletedTransferPair: z.boolean().optional(),
+  verified: z.boolean().optional()
 }).strict().describe('Successful synchronized transaction mutation.');
+
+export const transferPayeeSchema = z.object({
+  id: opaqueIdSchema,
+  name: z.string(),
+  accountId: opaqueIdSchema,
+  accountName: z.string(),
+  accountClosed: z.boolean(),
+  accountOffBudget: z.boolean()
+}).strict();
+export const transferPayeesOutputSchema = z.object({ transferPayees: z.array(transferPayeeSchema) }).strict()
+  .describe('Official transfer payees with resolved destination account metadata.');
+
+export const transferIntegrityReasonSchema = z.enum([
+  'MISSING_COUNTERPART', 'NON_RECIPROCAL_RELATIONSHIP', 'SAME_ACCOUNT', 'ZERO_AMOUNT',
+  'SAME_SIGN', 'MAGNITUDE_MISMATCH', 'MALFORMED_RELATIONSHIP_ID'
+]);
+export const transferPairSchema = z.object({
+  pairKey: z.string().regex(/^v1:[a-f0-9]{64}$/),
+  transactionA: transactionSchema.nullable(),
+  transactionB: transactionSchema.nullable(),
+  integrity: z.enum(['VALID', 'INVALID']),
+  reasonCodes: z.array(transferIntegrityReasonSchema),
+  fromTransaction: transactionSchema.nullable(),
+  toTransaction: transactionSchema.nullable(),
+  magnitude: positiveIntegerAmountSchema.nullable()
+}).strict().describe('Canonical observed reciprocal transfer pair and deterministic integrity evidence.');
+
+export const getTransferInputSchema = z.object({ transactionId: opaqueIdSchema }).strict().describe('Exact transaction ID on either transfer side.');
+export const getTransferOutputSchema = transferPairSchema;
+
+const magnitudeBounds = {
+  minMagnitude: positiveIntegerAmountSchema.optional(),
+  maxMagnitude: positiveIntegerAmountSchema.optional()
+} as const;
+const transferSortSchema = z.enum(['date_desc', 'date_asc', 'magnitude_desc', 'magnitude_asc']);
+const searchTransferBase = z.object({
+  startDate: isoDateSchema,
+  endDate: isoDateSchema,
+  accountIds: uniqueIdListSchema.optional(),
+  ...magnitudeBounds,
+  sort: transferSortSchema.default('date_desc'),
+  limit: z.number().int().min(1).max(MAX_TRANSACTION_SEARCH_RESULTS).default(DEFAULT_TRANSACTION_SEARCH_RESULTS),
+  offset: z.number().int().min(0).max(MAX_TRANSACTION_SEARCH_OFFSET).default(0)
+}).strict();
+function validateBoundedRangeAndMagnitude(value: { startDate: string; endDate: string; minMagnitude?: number | undefined; maxMagnitude?: number | undefined }, context: z.core.$RefinementCtx) {
+  const days = Math.floor((Date.parse(`${value.endDate}T00:00:00Z`) - Date.parse(`${value.startDate}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days < 1) context.addIssue({ code: 'custom', path: ['endDate'], message: 'endDate must be on or after startDate.', input: value.endDate });
+  else if (days > MAX_DATE_RANGE_DAYS) context.addIssue({ code: 'custom', path: ['endDate'], message: `The inclusive date range must not exceed ${MAX_DATE_RANGE_DAYS} days.`, input: value.endDate });
+  if (value.minMagnitude !== undefined && value.maxMagnitude !== undefined && value.minMagnitude > value.maxMagnitude) {
+    context.addIssue({ code: 'custom', path: ['maxMagnitude'], message: 'maxMagnitude must be greater than or equal to minMagnitude.', input: value.maxMagnitude });
+  }
+}
+export const searchTransfersInputSchema = searchTransferBase.extend({
+  integrity: z.enum(['any', 'VALID', 'INVALID']).default('any')
+}).superRefine(validateBoundedRangeAndMagnitude).describe('Bounded deterministic transfer-pair search.');
+export const searchTransfersOutputSchema = z.object({
+  transfers: z.array(transferPairSchema),
+  counts: z.object({ matched: z.number().int().nonnegative(), valid: z.number().int().nonnegative(), invalid: z.number().int().nonnegative() }).strict(),
+  page: z.object({ limit: z.number().int().positive(), offset: z.number().int().nonnegative(), returned: z.number().int().nonnegative() }).strict()
+}).strict().describe('Transfer pairs, complete pre-pagination counts, and deterministic page metadata.');
+
+const transferSidePlanSchema = z.object({
+  accountId: opaqueIdSchema,
+  amount: integerAmountSchema,
+  payeeId: opaqueIdSchema,
+  categoryId: opaqueIdSchema.nullable(),
+  cleared: z.boolean(),
+  notes: z.string().optional()
+}).strict();
+export const createTransferInputSchema = z.object({
+  fromAccountId: opaqueIdSchema,
+  toAccountId: opaqueIdSchema,
+  amount: positiveIntegerAmountSchema,
+  date: isoDateSchema,
+  notes: boundedTextSchema.optional(),
+  categoryId: opaqueIdSchema.optional(),
+  fromCleared: z.boolean().default(false),
+  toCleared: z.boolean().default(false),
+  dryRun: z.boolean().default(true),
+  confirmWrite: z.boolean().optional()
+}).strict().refine(value => value.fromAccountId !== value.toAccountId, {
+  path: ['toAccountId'], message: 'fromAccountId and toAccountId must be different.'
+}).describe('Manual transfer preview or explicitly confirmed creation request.');
+export const createTransferOutputSchema = z.object({
+  dryRun: z.boolean(), executed: z.boolean(), synchronized: z.boolean(), verified: z.boolean(),
+  phase: z.enum(['preflight', 'created_unverified', 'pair_discovered', 'side_updates_applied', 'synchronized', 'verified']),
+  anchorAccountId: opaqueIdSchema,
+  fromSide: transferSidePlanSchema,
+  toSide: transferSidePlanSchema,
+  pair: transferPairSchema.nullable()
+}).strict().describe('Exact transfer plan and verified creation phase evidence.');
+
+const diagnosticBase = searchTransferBase.extend({
+  dateWindowDays: z.number().int().min(0).max(7).default(3)
+});
+const diagnosticPageSchema = z.object({
+  limit: z.number().int().positive(), offset: z.number().int().nonnegative(), returned: z.number().int().nonnegative()
+}).strict();
+const candidateBase = {
+  candidateKey: z.string().regex(/^v1:[a-f0-9]{64}$/), transactionA: transactionSchema, transactionB: transactionSchema,
+  dateDifferenceDays: z.number().int().nonnegative()
+} as const;
+export const findPossibleTransfersInputSchema = diagnosticBase.extend({
+  classification: z.enum(['any', 'UNIQUE', 'AMBIGUOUS']).default('any')
+}).superRefine(validateBoundedRangeAndMagnitude).describe('Bounded read-only possible-transfer diagnostic request.');
+export const findPossibleTransfersOutputSchema = z.object({
+  candidates: z.array(z.object({
+    ...candidateBase,
+    classification: z.enum(['UNIQUE', 'AMBIGUOUS']),
+    leftCandidateCount: z.number().int().positive(), rightCandidateCount: z.number().int().positive(),
+    reasonCodes: z.array(z.enum(['OPPOSITE_AMOUNT', 'SAME_DATE', 'DATE_WITHIN_WINDOW']))
+  }).strict()),
+  counts: z.object({ matched: z.number().int().nonnegative(), unique: z.number().int().nonnegative(), ambiguous: z.number().int().nonnegative() }).strict(),
+  page: diagnosticPageSchema
+}).strict().describe('Possible unlinked transfer candidates with graph classification and complete counts.');
+export const findPossibleDuplicatesInputSchema = diagnosticBase.extend({
+  classification: z.enum(['any', 'STRONG', 'LIKELY']).default('any')
+}).superRefine(validateBoundedRangeAndMagnitude).describe('Bounded read-only possible-duplicate diagnostic request.');
+export const findPossibleDuplicatesOutputSchema = z.object({
+  candidates: z.array(z.object({
+    ...candidateBase,
+    classification: z.enum(['STRONG', 'LIKELY']),
+    reasonCodes: z.array(z.enum(['SAME_IMPORTED_ID', 'SAME_DATE', 'SAME_PAYEE', 'SAME_IMPORTED_PAYEE', 'DATE_WITHIN_WINDOW']))
+  }).strict()),
+  counts: z.object({ matched: z.number().int().nonnegative(), strong: z.number().int().nonnegative(), likely: z.number().int().nonnegative() }).strict(),
+  page: diagnosticPageSchema
+}).strict().describe('Possible duplicate candidates with deterministic evidence and complete counts.');
+
+export const accountReconciliationInputSchema = z.object({
+  accountId: opaqueIdSchema,
+  cutoff: isoDateSchema.optional(),
+  statementBalance: integerAmountSchema.optional()
+}).strict().describe('Exact account, optional cutoff, and optional signed statement balance.');
+const reconciliationValuesSchema = z.object({
+  ledger: integerAmountSchema, cleared: integerAmountSchema, reconciled: integerAmountSchema, uncleared: integerAmountSchema
+}).strict();
+const reconciliationCountsSchema = z.object({
+  ledger: z.number().int().nonnegative(), cleared: z.number().int().nonnegative(),
+  reconciled: z.number().int().nonnegative(), uncleared: z.number().int().nonnegative()
+}).strict();
+export const accountReconciliationOutputSchema = z.object({
+  account: z.object({ id: opaqueIdSchema, name: z.string() }).strict(),
+  cutoff: isoDateSchema,
+  balances: reconciliationValuesSchema,
+  counts: reconciliationCountsSchema,
+  status: z.enum(['NO_STATEMENT', 'MATCHES_BOTH', 'MATCHES_CLEARED', 'MATCHES_LEDGER', 'DIFFERENCE']),
+  statement: z.object({
+    balance: integerAmountSchema, differenceFromLedger: integerAmountSchema, differenceFromCleared: integerAmountSchema,
+    status: z.enum(['MATCHES_BOTH', 'MATCHES_CLEARED', 'MATCHES_LEDGER', 'DIFFERENCE'])
+  }).strict().nullable(),
+  bankReported: z.object({ balanceCurrent: integerAmountSchema, differenceFromLedger: integerAmountSchema }).strict().optional()
+}).strict().describe('Split-safe read-only ledger, statement, and bank metadata reconciliation snapshot.');
 
 const changedSchema = z.boolean().describe('Whether this call changed persisted Actual state.');
 

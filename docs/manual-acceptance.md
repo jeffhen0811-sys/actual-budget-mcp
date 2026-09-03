@@ -17,13 +17,16 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 
 1. Run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
 2. Launch `node dist/index.js` through an MCP inspector or compatible client.
-3. Confirm that exactly 46 tools are discoverable and that no raw ActualQL/query tool, field-specific search/bulk alias, `actual_run_rules`, or `actual_preview_rule` is present.
+3. Confirm that exactly 53 tools are discoverable and that no raw ActualQL/query tool, field-specific search/bulk alias, relationship mutation, reconciliation lock/unlock, `actual_run_rules`, or `actual_preview_rule` is present.
 4. Call `actual_health` and confirm that `connected` and `budgetLoaded` are true.
 5. Call account, category, payee, rule, and bounded transaction read tools. Verify integer minor-unit amounts, ranked `pre`/`default`/`post` stages, transfer-payee context, and verbatim user-authored values.
 6. Call `actual_list_budget_months`, read one month, and request a bounded summary. Verify official signed aggregates, hidden flags, and the reported envelope/tracking capabilities without asserting personal financial values.
 7. Use `actual_get_transaction` for an exact ordinary transaction and, if available, exact split child/parent IDs. Confirm the requested top-level identity is preserved.
 8. Exercise `actual_search_transactions` across accounts with identifier, manual/imported, cleared, signed amount, literal text, uncategorized, sort, pagination, inline total, and grouped-mode cases. Repeat identical pages and confirm stable IDs/order.
 9. Run `actual_preview_import` for controlled items and compare complete account/transaction/payee/category/rule/budget fingerprints before and after. Preview-only IDs must not be registered for cleanup.
+10. List transfer payees, inspect one valid pair and one available broken-pair fixture, search from either side, and repeat identical pages to prove deterministic keys and ordering.
+11. Run both candidate tools with boundary windows, filters, and pages; verify transfers/splits/starting balances are excluded, ambiguity is preserved, and fingerprints do not change.
+12. Run reconciliation with and without a signed statement balance; verify split-safe counts, public cutoff-balance coherence, status precedence, and separately labeled bank metadata.
 
 ## Authorized Mutation Checks
 
@@ -45,6 +48,8 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 16. Create at least three exact-ID-owned transactions, two categories, and two ordinary payees. Run heterogeneous `actual_bulk_update_transactions` without `dryRun` and confirm no mutation, then verify the missing-confirmation guard, confirmed execution, exact read-back, one synchronization, and idempotent repeat.
 17. Confirm split parents/children and relational transfer edits are protected. Category/payee explicit null clears must remain rejected unless the installed declaration, bundle contract test, and this controlled server have all proven them safe.
 18. Preview a unique import, review its generated preview-only and existing IDs, then import the byte-equivalent normalized request with `expectedPreviewFingerprint`. Verify a modified request returns `PREVIEW_FINGERPRINT_MISMATCH` before mutation.
+19. Preview a same-budget-status transfer and a mixed-budget-status transfer, verifying signed sides and category placement with unchanged fingerprints. With explicit authorization, confirm creation, record both exact IDs as one cleanup unit, verify reciprocal identifiers and independent clear states, then delete the pair with one official call and verify both IDs absent.
+20. Preview and import an item with an exact ordinary payee and, when fixtures permit, an official transfer payee. Verify payee-over-name precedence, fingerprint parity, observed reciprocal effects, and exact pair cleanup.
 
 ## Restart Check
 
@@ -53,4 +58,4 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 3. Verify health and reads.
 4. Repeat the original import and confirm that the previously deleted `imported_id` is not recreated under the default policy.
 
-Record the date, Actual Server version, MCP version/commit, exact 46-tool inventory result, installed query/import findings, search/preview/bulk timings, split/transfer availability, payee/rule and budget-mode capability outcomes, selected test months, cleanup result, permanent fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.
+Record the date, Actual Server version, MCP version/commit, exact 53-tool inventory result, installed query/import/transfer/balance findings, bounded diagnostic timings at representative and maximum supported sizes, search/preview/bulk timings, split/transfer availability, payee/rule and budget-mode capability outcomes, selected test months, pair cleanup result, permanent reciprocal-ID fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.

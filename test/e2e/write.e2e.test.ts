@@ -16,8 +16,10 @@ import {
   categoryGroupDeletionOutputSchema,
   categoryGroupMutationOutputSchema,
   categoryMutationOutputSchema,
+  createTransferOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  getTransferOutputSchema,
   importTransactionsOutputSchema,
   listBudgetMonthsOutputSchema,
   payeesOutputSchema,
@@ -37,7 +39,7 @@ import {
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
-import { loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
+import { CARD_TEST_ACCOUNT_NAME, loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
 import { matchesTemporaryTestPayee, TEMPORARY_TEST_PAYEE } from '../real/ownership.js';
 import { assertPayeeWriteAllowed } from '../real/ownership.js';
 import { permanentFixtureFingerprint } from '../real/fingerprint.js';
@@ -129,6 +131,10 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
         }
         await registry.cleanup({
           transaction: async resource => { await callTool(running, 'actual_delete_transaction', { transactionId: resource.id, confirmDestructive: true }, transactionMutationOutputSchema); },
+          verifyTransactionsAbsent: async ids => {
+            for (const id of ids) expect((await callToolExpectingError(running, 'actual_get_transaction', { transactionId: id })).structuredContent)
+              .toMatchObject({ error: { code: 'NOT_FOUND' } });
+          },
           rule: async resource => { await callTool(running, 'actual_delete_rule', { ruleId: resource.id, confirmDestructive: true }, ruleDeletionOutputSchema); },
           payee: async resource => { assertPayeeWriteAllowed(resource.name, 'delete'); await callTool(running, 'actual_delete_payee', { payeeId: resource.id, confirmDestructive: true }, payeeDeletionOutputSchema); },
           category: async resource => { await callTool(running, 'actual_delete_category', { categoryId: resource.id, confirmDestructive: true }, categoryDeletionOutputSchema); },
@@ -200,6 +206,30 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     }, transactionMutationOutputSchema);
     expect((await queryOwned())[0]).toMatchObject({ notes: 'MCP INTEGRATION TEST UPDATED' });
     expect(await callTool(running, 'actual_sync', {}, syncOutputSchema)).toMatchObject({ success: true });
+  });
+
+  it('previews, creates, verifies, owns, and deletes one reciprocal transfer through compiled stdio', async () => {
+    const accounts = (await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema)).accounts;
+    const other = accounts.find(account => account.name === CARD_TEST_ACCOUNT_NAME);
+    expect(other, `Missing account ${CARD_TEST_ACCOUNT_NAME}`).toBeDefined();
+    const before = await permanentFixtureFingerprint(fingerprintReader());
+    const request = { fromAccountId: accountId, toAccountId: other!.id, amount: 321, date: TEST_DATE };
+    expect(await callTool(running, 'actual_create_transfer', request, createTransferOutputSchema)).toMatchObject({ dryRun: true, executed: false });
+    expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(before);
+    const created = await callTool(running, 'actual_create_transfer', {
+      ...request, dryRun: false, confirmWrite: true
+    }, createTransferOutputSchema);
+    expect(created).toMatchObject({ verified: true, pair: { integrity: 'VALID' } });
+    const ids = [created.pair!.transactionA!.id, created.pair!.transactionB!.id] as const;
+    registry.registerTransferPair(created.pair!.pairKey, ids, `transfer-${randomUUID()}`);
+    expect(await callTool(running, 'actual_get_transfer', { transactionId: ids[0] }, getTransferOutputSchema)).toMatchObject({ pairKey: created.pair!.pairKey });
+    expect(await callTool(running, 'actual_delete_transaction', {
+      transactionId: ids[0], confirmDestructive: true
+    }, transactionMutationOutputSchema)).toMatchObject({ deletedTransferPair: true, verified: true });
+    registry.releaseTransferPair(created.pair!.pairKey);
+    for (const id of ids) expect((await callToolExpectingError(running, 'actual_get_transaction', { transactionId: id })).structuredContent)
+      .toMatchObject({ error: { code: 'NOT_FOUND' } });
+    expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(before);
   });
 
   it('returns a structured error for a nonexistent transaction and remains operational', async () => {

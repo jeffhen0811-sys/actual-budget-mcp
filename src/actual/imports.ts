@@ -46,6 +46,7 @@ export function importRequestFingerprint(request: NormalizedImportRequest): stri
       date: transaction.date,
       amount: transaction.amount,
       imported_id: transaction.imported_id,
+      ...(transaction.payee === undefined ? {} : { payee: transaction.payee }),
       ...(transaction.payee_name === undefined ? {} : { payee_name: transaction.payee_name }),
       ...(transaction.imported_payee === undefined ? {} : { imported_payee: transaction.imported_payee }),
       ...(transaction.notes === undefined ? {} : { notes: transaction.notes }),

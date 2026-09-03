@@ -88,6 +88,25 @@ describe('Actual data contracts observed through @actual-app/api', () => {
     expect(transactionSchema.parse(base)).toEqual(base);
   });
 
+  it('accepts reciprocal transfer identifiers and keeps nullable relationship evidence observable', () => {
+    const from = transactionSchema.parse({
+      id: 'transfer-from', account: 'checking', date: '2026-08-20', amount: -123,
+      payee: 'transfer-payee-savings', transfer_id: 'transfer-to', category: null
+    });
+    const to = transactionSchema.parse({
+      id: 'transfer-to', account: 'savings', date: '2026-08-20', amount: 123,
+      payee: 'transfer-payee-checking', transfer_id: 'transfer-from', category: null
+    });
+    const broken = transactionSchema.parse({
+      id: 'broken-transfer', account: 'checking', date: '2026-08-20', amount: -123,
+      transfer_id: null
+    });
+
+    expect(from.transfer_id).toBe(to.id);
+    expect(to.transfer_id).toBe(from.id);
+    expect(broken).toHaveProperty('transfer_id', null);
+  });
+
   it('requires integer minor-unit amounts and rejects invented nullability on required fields', () => {
     expect(() => transactionSchema.parse({ id: 't', account: 'a', date: '2026-08-20', amount: 1.5 })).toThrow('integer');
     expect(() => transactionSchema.parse({ id: 't', account: null, date: '2026-08-20', amount: 1 })).toThrow();

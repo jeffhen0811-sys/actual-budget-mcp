@@ -32,6 +32,7 @@ export function fakeAdapter(): ActualApiAdapter {
     resetBudgetHold: vi.fn().mockResolvedValue(undefined),
     batchBudgetUpdates: vi.fn().mockImplementation(async action => action()),
     getPayees: vi.fn().mockResolvedValue([]),
+    getTransferPayees: vi.fn().mockResolvedValue([]),
     createPayee: vi.fn().mockResolvedValue('payee-id'),
     updatePayee: vi.fn().mockResolvedValue(undefined),
     deletePayee: vi.fn().mockResolvedValue(undefined),
@@ -43,6 +44,7 @@ export function fakeAdapter(): ActualApiAdapter {
     deleteRule: vi.fn().mockResolvedValue(true),
     getTransactions: vi.fn().mockResolvedValue([]),
     aqlQuery: vi.fn().mockResolvedValue({ data: [] }),
+    addTransactions: vi.fn().mockResolvedValue('ok'),
     importTransactions: vi.fn().mockResolvedValue({ added: [], updated: [], updatedPreview: [], errors: [] }),
     updateTransaction: vi.fn().mockResolvedValue(undefined),
     deleteTransaction: vi.fn().mockResolvedValue(undefined)

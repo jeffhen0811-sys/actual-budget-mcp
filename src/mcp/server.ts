@@ -5,6 +5,8 @@ import type { WritableRuleDraft } from '../actual/rules.js';
 import type { Logger } from '../logger.js';
 import {
   accountIdInputSchema,
+  accountReconciliationInputSchema,
+  accountReconciliationOutputSchema,
   accountDeletionOutputSchema,
   accountMutationOutputSchema,
   accountOutputSchema,
@@ -30,6 +32,8 @@ import {
   createCategoryInputSchema,
   createPayeeInputSchema,
   createRuleInputSchema,
+  createTransferInputSchema,
+  createTransferOutputSchema,
   copyBudgetInputSchema,
   deleteAccountInputSchema,
   deleteCategoryGroupInputSchema,
@@ -38,7 +42,13 @@ import {
   deleteRuleInputSchema,
   deleteTransactionInputSchema,
   emptyInputSchema,
+  findPossibleDuplicatesInputSchema,
+  findPossibleDuplicatesOutputSchema,
+  findPossibleTransfersInputSchema,
+  findPossibleTransfersOutputSchema,
   getTransactionsInputSchema,
+  getTransferInputSchema,
+  getTransferOutputSchema,
   healthOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
@@ -46,6 +56,8 @@ import {
   transactionOutputSchema,
   searchTransactionsInputSchema,
   searchTransactionsOutputSchema,
+  searchTransfersInputSchema,
+  searchTransfersOutputSchema,
   previewImportInputSchema,
   previewImportOutputSchema,
   bulkUpdateTransactionsInputSchema,
@@ -70,6 +82,7 @@ import {
   setBudgetCarryoverInputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema,
+  transferPayeesOutputSchema,
   updateAccountInputSchema,
   updateCategoryGroupInputSchema,
   updateCategoryInputSchema,
@@ -87,9 +100,16 @@ export interface ToolRuntime {
   getAccount: ActualClient['getAccount'];
   listCategories: ActualClient['listCategories'];
   listPayees: ActualClient['listPayees'];
+  listTransferPayees: ActualClient['listTransferPayees'];
   getTransactions: ActualClient['getTransactions'];
   getTransaction: ActualClient['getTransaction'];
   searchTransactions: ActualClient['searchTransactions'];
+  getTransfer: ActualClient['getTransfer'];
+  searchTransfers: ActualClient['searchTransfers'];
+  createTransfer: ActualClient['createTransfer'];
+  findPossibleTransfers: ActualClient['findPossibleTransfers'];
+  findPossibleDuplicates: ActualClient['findPossibleDuplicates'];
+  getAccountReconciliation: ActualClient['getAccountReconciliation'];
   previewImport: ActualClient['previewImport'];
   bulkUpdateTransactions: ActualClient['bulkUpdateTransactions'];
   importTransactions: ActualClient['importTransactions'];
@@ -179,7 +199,14 @@ export const TOOL_NAMES = [
   'actual_get_transaction',
   'actual_search_transactions',
   'actual_bulk_update_transactions',
-  'actual_preview_import'
+  'actual_preview_import',
+  'actual_list_transfer_payees',
+  'actual_get_transfer',
+  'actual_search_transfers',
+  'actual_create_transfer',
+  'actual_find_possible_transfers',
+  'actual_find_possible_duplicates',
+  'actual_get_account_reconciliation'
 ] as const;
 
 function acceptUnconfirmedForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
@@ -211,7 +238,7 @@ const deleteRuleToolInputSchema = acceptUnconfirmedForStructuredError(deleteRule
 
 export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.5.0' },
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.6.0' },
     { instructions: 'Amounts are signed integer minor units. Transaction bulk update and budget copy default to dry runs. Use write confirmations only after explicit authorization.' }
   );
 
@@ -561,6 +588,111 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     },
     async ({ transactionId }) => {
       try { return successResult(await runtime.deleteTransaction(transactionId)); } catch (error) { return toolError(error, 'actual_delete_transaction', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_list_transfer_payees',
+    {
+      title: 'List Actual transfer payees',
+      description: 'List official transfer payees with exact destination account metadata.',
+      inputSchema: emptyInputSchema,
+      outputSchema: transferPayeesOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async () => {
+      try { return successResult({ transferPayees: await runtime.listTransferPayees() }); }
+      catch (error) { return toolError(error, 'actual_list_transfer_payees', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_transfer',
+    {
+      title: 'Get exact Actual transfer',
+      description: 'Inspect one reciprocal transfer pair by either exact transaction ID and return integrity evidence.',
+      inputSchema: getTransferInputSchema,
+      outputSchema: getTransferOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ transactionId }) => {
+      try { return successResult(await runtime.getTransfer(transactionId)); }
+      catch (error) { return toolError(error, 'actual_get_transfer', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_search_transfers',
+    {
+      title: 'Search Actual transfers',
+      description: 'Search bounded reciprocal transfer evidence with integrity filters and deterministic pagination.',
+      inputSchema: searchTransfersInputSchema,
+      outputSchema: searchTransfersOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.searchTransfers(input as Parameters<ToolRuntime['searchTransfers']>[0])); }
+      catch (error) { return toolError(error, 'actual_search_transfers', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_create_transfer',
+    {
+      title: 'Preview or create an Actual transfer',
+      description: 'Preview by default; creation requires dryRun false and confirmWrite true and is non-idempotent.',
+      inputSchema: createTransferInputSchema,
+      outputSchema: createTransferOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async input => {
+      try { return successResult(await runtime.createTransfer(input as Parameters<ToolRuntime['createTransfer']>[0])); }
+      catch (error) { return toolError(error, 'actual_create_transfer', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_find_possible_transfers',
+    {
+      title: 'Find possible unlinked Actual transfers',
+      description: 'Classify bounded opposite-amount cross-account candidates without linking or mutation.',
+      inputSchema: findPossibleTransfersInputSchema,
+      outputSchema: findPossibleTransfersOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.findPossibleTransfers(input as Parameters<ToolRuntime['findPossibleTransfers']>[0])); }
+      catch (error) { return toolError(error, 'actual_find_possible_transfers', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_find_possible_duplicates',
+    {
+      title: 'Find possible duplicate Actual transactions',
+      description: 'Classify bounded same-account duplicate candidates without merge, deletion, or mutation.',
+      inputSchema: findPossibleDuplicatesInputSchema,
+      outputSchema: findPossibleDuplicatesOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.findPossibleDuplicates(input as Parameters<ToolRuntime['findPossibleDuplicates']>[0])); }
+      catch (error) { return toolError(error, 'actual_find_possible_duplicates', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_get_account_reconciliation',
+    {
+      title: 'Get Actual account reconciliation diagnostics',
+      description: 'Compute a read-only split-safe cutoff snapshot with optional signed statement differences.',
+      inputSchema: accountReconciliationInputSchema,
+      outputSchema: accountReconciliationOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ accountId, cutoff, statementBalance }) => {
+      try { return successResult(await runtime.getAccountReconciliation(accountId, cutoff, statementBalance)); }
+      catch (error) { return toolError(error, 'actual_get_account_reconciliation', logger); }
     }
   );
 
