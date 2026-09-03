@@ -85,10 +85,12 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
 
   it('imports idempotently and synchronizes every successful mutation', async () => {
     const { api, client } = await fixture();
-    vi.mocked(api.importTransactions).mockResolvedValue({ added: ['t1'], updated: [], errors: [] });
+    vi.mocked(api.importTransactions).mockResolvedValue({ added: ['t1'], updated: [], updatedPreview: [], errors: [] });
     await expect(client.importTransactions('account', [{ date: '2026-01-01', amount: -1200, imported_id: 'pluggy:abc123' }]))
-      .resolves.toEqual({ added: ['t1'], updated: [], errors: [] });
-    expect(api.importTransactions).toHaveBeenCalledWith('account', [{ account: 'account', date: '2026-01-01', amount: -1200, imported_id: 'pluggy:abc123' }], { reimportDeleted: false });
+      .resolves.toMatchObject({ added: ['t1'], updated: [], errors: [], addedCount: 1, updatedCount: 0, errorCount: 0 });
+    expect(api.importTransactions).toHaveBeenCalledWith('account', [{ account: 'account', date: '2026-01-01', amount: -1200, imported_id: 'pluggy:abc123' }], {
+      defaultCleared: true, dryRun: false, reimportDeleted: false
+    });
     expect(api.sync).toHaveBeenCalledOnce();
     await client.shutdown();
   });

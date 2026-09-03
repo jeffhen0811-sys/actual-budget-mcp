@@ -4,11 +4,15 @@
 | --- | --- |
 | Environment configuration and sanitized server identity | `test/config-schemas.test.ts`, `test/security.test.ts` |
 | Official API boundary and narrow adapter | Type-checked `src/actual/adapter.ts`; `test/client.test.ts` SDK doubles |
+| Installed `q`/`aqlQuery`, transaction fields/joins/operators/calculations/splits, and import preview behavior | `test/contract/advanced-transaction-contract.test.ts`, `docs/actual-api-26.8.1-contract.md` |
 | Installed budget methods, aggregates, envelope/tracking variants, carryover/hold behavior, and non-transactional batching | `test/contract/sdk-surface.test.ts`, `test/contract/actual-contract.test.ts`, `docs/actual-api-26.8.1-contract.md` |
 | Payee CRUD/merge, rule CRUD, stage/return/nullability discrepancies, and unsupported run/preview exports | `test/contract/sdk-surface.test.ts`, `docs/actual-api-26.8.1-contract.md` |
 | Lazy initialization, retry, FIFO serialization, cache ownership, and shutdown | `test/client.test.ts` |
 | Account, category, payee, balance, and bounded transaction reads | `test/client.test.ts`, `test/mcp.test.ts` |
 | Idempotent import, allowlisted update, protected deletion, and post-mutation sync | `test/client.test.ts`, `test/mcp.test.ts` |
+| Recursive canonical transaction projection, literal-like escaping, fixed query compilation, exact lookup, search filters/sorts/pages/totals | `test/advanced-transactions.test.ts`, guarded integration/E2E read suites |
+| Shared import normalization, versioned fingerprint, preview evidence/purity, supported options, and mismatch refusal | `test/advanced-transactions.test.ts`, guarded integration/E2E write suites |
+| Bulk planning, reference validation, null-clear fallback, split/transfer protection, dry-run, confirmation, single sync, read-back, and phased failures | `test/bulk-transactions.test.ts`, guarded integration/E2E write suites |
 | Structured results, exact tool list, annotations, strict validation, and tool errors | `test/mcp.test.ts` |
 | Budget projection, summaries, desired-state writes, prospective carryover, hold/reset, copy planning/execution, bounds, idempotency, and partial recovery | `test/budget.test.ts`, `test/config-schemas.test.ts`, `test/mcp.test.ts` |
 | Safe payee preflights, transfer guards, merge recovery, rule projection/reference validation, full-object updates, and protected deletion | `test/payee-rule-client.test.ts`, `test/payee-rule-contracts.test.ts`, `test/rules.test.ts` |

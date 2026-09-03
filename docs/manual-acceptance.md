@@ -17,10 +17,13 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 
 1. Run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
 2. Launch `node dist/index.js` through an MCP inspector or compatible client.
-3. Confirm that exactly 42 tools are discoverable and that neither `actual_run_rules` nor `actual_preview_rule` is present.
+3. Confirm that exactly 46 tools are discoverable and that no raw ActualQL/query tool, field-specific search/bulk alias, `actual_run_rules`, or `actual_preview_rule` is present.
 4. Call `actual_health` and confirm that `connected` and `budgetLoaded` are true.
 5. Call account, category, payee, rule, and bounded transaction read tools. Verify integer minor-unit amounts, ranked `pre`/`default`/`post` stages, transfer-payee context, and verbatim user-authored values.
 6. Call `actual_list_budget_months`, read one month, and request a bounded summary. Verify official signed aggregates, hidden flags, and the reported envelope/tracking capabilities without asserting personal financial values.
+7. Use `actual_get_transaction` for an exact ordinary transaction and, if available, exact split child/parent IDs. Confirm the requested top-level identity is preserved.
+8. Exercise `actual_search_transactions` across accounts with identifier, manual/imported, cleared, signed amount, literal text, uncategorized, sort, pagination, inline total, and grouped-mode cases. Repeat identical pages and confirm stable IDs/order.
+9. Run `actual_preview_import` for controlled items and compare complete account/transaction/payee/category/rule/budget fingerprints before and after. Preview-only IDs must not be registered for cleanup.
 
 ## Authorized Mutation Checks
 
@@ -39,6 +42,9 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 13. Create a unique temporary expense group/category. Exercise amount set/zero, prospective carryover, dry-run copy, copy execution, repeat idempotency, and validation failures. Exercise hold/reset only when the returned month proves envelope support; record the official applied boolean.
 14. In `finally`, reset any run-owned hold, clear owned amounts in both months, disable owned carryover from the source month, then delete the exact temporary category and group.
 15. Clean remaining exact IDs in this order: transactions, rules, payees, categories, category groups, accounts. Confirm no owned ID remains and the permanent fingerprint, including budget planning across the official range, is unchanged.
+16. Create at least three exact-ID-owned transactions, two categories, and two ordinary payees. Run heterogeneous `actual_bulk_update_transactions` without `dryRun` and confirm no mutation, then verify the missing-confirmation guard, confirmed execution, exact read-back, one synchronization, and idempotent repeat.
+17. Confirm split parents/children and relational transfer edits are protected. Category/payee explicit null clears must remain rejected unless the installed declaration, bundle contract test, and this controlled server have all proven them safe.
+18. Preview a unique import, review its generated preview-only and existing IDs, then import the byte-equivalent normalized request with `expectedPreviewFingerprint`. Verify a modified request returns `PREVIEW_FINGERPRINT_MISMATCH` before mutation.
 
 ## Restart Check
 
@@ -47,4 +53,4 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 3. Verify health and reads.
 4. Repeat the original import and confirm that the previously deleted `imported_id` is not recreated under the default policy.
 
-Record the date, Actual Server version, MCP version/commit, exact 42-tool inventory result, payee/rule and budget-mode capability outcomes, selected test months, cleanup result, permanent fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.
+Record the date, Actual Server version, MCP version/commit, exact 46-tool inventory result, installed query/import findings, search/preview/bulk timings, split/transfer availability, payee/rule and budget-mode capability outcomes, selected test months, cleanup result, permanent fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.

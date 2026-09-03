@@ -94,6 +94,34 @@ The exported `getTransactions` implementation adds date filters only when `start
 
 `getBudgetMonths()` returns the complete inclusive budget-bound month list. Each returned value is passed to `getBudgetMonth()` and its category arrays, category IDs, budgeted values, and carryover values are validated before a destructive decision. Any malformed or failed read stops deletion with `PREFLIGHT_INCONCLUSIVE`.
 
+## ActualQL transaction query contract
+
+The installed package publicly exports `q` from `@actual-app/api/@types/app/query` and the preferred `aqlQuery(query)` executor. `runQuery(query)` is also exported but explicitly deprecated and is not used by this release. The MCP keeps these exports behind a typed adapter boundary: callers can provide only the documented transaction filters, sort enums, pagination values, and split mode. They cannot provide a table, field, operator, expression, query object, raw SQL, or raw ActualQL.
+
+The installed query builder serializes a transaction query into a `QueryState` containing `table`, `tableOptions`, filter/select/group/order expressions, calculation/raw/dead/reference flags, and nullable `limit` and `offset`. The v0.5.0 compiler fixes the table to `transactions` and selects only canonical fields: `id`, `account`, `date`, `amount`, `payee`, `payee.name`, `imported_payee`, `category`, `category.name`, `notes`, `imported_id`, `transfer_id`, `cleared`, `reconciled`, `starting_balance_flag`, `is_parent`, `is_child`, and `parent_id`.
+
+Installed declaration and bundle findings used by advanced transaction operations:
+
+- Filters support equality and inequality (including null), `$oneof`, signed `$gte`/`$lte` ranges, `$and`, `$or`, and `$like`. The MCP escapes literal-like input and never accepts an operator from the caller.
+- `payee.name` and `category.name` are resolved joins. The transaction view preserves explicit nullable payee/category/parent relationships and maps installed storage names to the public field names.
+- Explicit multi-field ordering is preserved and the installed schema customizer appends `id` when any order is supplied. The MCP nevertheless emits `id` explicitly as its deterministic final tie-breaker.
+- `limit` and `offset` are part of the serialized query state. MCP limits are stricter than the generic builder and are validated before execution.
+- `calculate({ $count: 'id' })` and `calculate({ $sum: '$amount' })` serialize as a single `result` expression. The installed compiler requires the `$` field-reference prefix for the sum operand; using the literal string `amount` fails at runtime. Aggregate results are treated as unknown and strictly parsed.
+- Transaction split modes are `inline`, `grouped`, `all`, and `none`. `inline` is the installed default and removes split parents; `grouped` returns parents with nested `subtransactions` and can include the whole group when a child matches; `all` exposes parent and child rows independently; `none` is installed but is not part of the public v0.5.0 search surface.
+- Exact lookup uses an `all` identity query so a requested child cannot be replaced by its parent. A matching parent can then be enriched with a second grouped query.
+
+Canonical transaction projection preserves explicit null separately from absence for payee, category, notes, imported ID/payee, transfer ID, and parent ID. It preserves `is_parent`, `is_child`, `parent_id`, and nested `subtransactions` recursively, plus resolved `payee_name` and `category_name` when selected. Internal fields such as `tombstone`, `_unmatched`, `_deleted`, `raw_synced_data`, rule diagnostics, schedule internals, and split error diagnostics are not exposed.
+
+## Import and preview contract
+
+`ImportTransactionsOpts` in the installed declaration contains exactly optional `defaultCleared`, `dryRun`, and `reimportDeleted`. There is no installed `payeeNameNormalization` option. The public wrapper defaults to `defaultCleared: true` and `dryRun: false` only when the entire options object is omitted, so the MCP normalizes both supported behavioral defaults explicitly for every import and preview request. The v0.4.0-compatible deleted-import policy is explicitly `reimportDeleted: false`.
+
+The installed return value contains `added`, `updated`, `updatedPreview`, and sanitized `errors`. Each preview entry contains the normalized `transaction`, optionally an `existing` transaction, and optional `ignored` or `tombstone` evidence. New transaction identifiers are generated in memory before the preview branch, so `added` IDs from dry-run are preview-only and are never described as persisted IDs. Updated IDs refer to existing transactions.
+
+The bundle normalizes payee input before reconciliation: non-empty `payee_name` is trimmed and title-cased, while `imported_payee` preserves the trimmed imported description. It runs Rules on normalized transactions before imported-ID and fuzzy matching. Imported-ID matching consults live or tombstoned transaction views according to `reimportDeleted`; manual matching proceeds through the installed reconciliation stages. Reconciled matches become ignored preview entries, unchanged matches are also reported as ignored, changed matches include sanitized existing evidence, tombstoned preview input is marked, and `TransactionError` becomes an `errors` entry.
+
+When `dryRun` is true, the public wrapper sets the internal preview flag. The reconciler still performs normalization, Rules, matching, and planning, but the installed `if (!isPreview)` guard skips both `createNewPayees(...)` and `batchUpdateTransactions(...)`. A would-be payee can therefore receive an in-memory ID used by preview planning without being persisted. The MCP does not synchronize after preview and proves purity separately through unit, real-server, and compiled stdio fingerprints.
+
 ## Observed destructive behavior and stop condition
 
 The installed 26.8.1 implementation confirms these unsafe native behaviors:

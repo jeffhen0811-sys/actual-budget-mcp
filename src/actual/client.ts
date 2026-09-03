@@ -18,7 +18,28 @@ import type {
   AdapterTransaction,
   ImportTransaction
 } from './adapter.js';
+import {
+  importRequestFingerprint,
+  normalizeImportRequest,
+  parseImportResult,
+  type ImportRequestOptions
+} from './imports.js';
+import {
+  desiredStateMatches,
+  planBulkTransactionUpdates,
+  type BulkUpdateItem
+} from './bulk.js';
 import { FifoQueue } from './queue.js';
+import {
+  compileExactTransaction,
+  compileTransactionsByIds,
+  compileTransactionSearch,
+  compileTransactionTotal,
+  parseAqlAggregate,
+  parseAqlRows,
+  projectTransaction,
+  type TransactionSearchRequest
+} from './transactions.js';
 import {
   budgetModeCapability,
   findBudgetCategory,
@@ -268,7 +289,7 @@ export class ActualClient {
           false
         );
       }
-      return transactions.map(transaction => this.projectTransaction(transaction));
+      return transactions.map(transaction => projectTransaction(transaction, 'actual_get_transactions'));
     });
   }
 
@@ -643,22 +664,177 @@ export class ActualClient {
     });
   }
 
-  private projectTransaction(transaction: AdapterTransaction) {
-    return {
-      id: transaction.id,
-      account: transaction.account,
-      date: transaction.date,
-      amount: transaction.amount,
-      ...(transaction.payee === undefined ? {} : { payee: transaction.payee }),
-      ...(transaction.category === undefined ? {} : { category: transaction.category }),
-      ...(transaction.notes === undefined ? {} : { notes: transaction.notes }),
-      ...(transaction.cleared === undefined ? {} : { cleared: transaction.cleared }),
-      ...(transaction.reconciled === undefined ? {} : { reconciled: transaction.reconciled }),
-      ...(transaction.imported_id === undefined ? {} : { imported_id: transaction.imported_id }),
-      ...(transaction.imported_payee === undefined ? {} : { imported_payee: transaction.imported_payee }),
-      ...(transaction.transfer_id === undefined ? {} : { transfer_id: transaction.transfer_id }),
-      ...(transaction.starting_balance_flag === undefined ? {} : { starting_balance_flag: transaction.starting_balance_flag })
-    };
+  getTransaction(transactionId: string) {
+    const operation = 'actual_get_transaction';
+    return this.run(operation, async () => {
+      const exactRows = parseAqlRows(await this.api.aqlQuery(compileExactTransaction(transactionId, 'all')), operation);
+      const exact = exactRows.find(row => row.id === transactionId);
+      if (!exact) throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false, {
+        entity: { type: 'transaction', id: transactionId }
+      });
+      if (exact.is_parent) {
+        const groupedRows = parseAqlRows(await this.api.aqlQuery(compileExactTransaction(transactionId, 'grouped')), operation);
+        const parent = groupedRows.find(row => row.id === transactionId);
+        if (parent) return projectTransaction(parent, operation);
+      }
+      return projectTransaction(exact, operation);
+    });
+  }
+
+  searchTransactions(input: TransactionSearchRequest) {
+    const operation = 'actual_search_transactions';
+    return this.run(operation, async () => {
+      const rows = parseAqlRows(await this.api.aqlQuery(compileTransactionSearch(input)), operation);
+      const transactions = rows.map(row => projectTransaction(row, operation));
+      const splitMode = input.splitMode ?? 'inline';
+      const base = {
+        transactions,
+        page: { limit: input.limit, offset: input.offset, returned: transactions.length },
+        splitMode
+      };
+      if (!input.includeTotals) return base;
+      if (splitMode === 'grouped') {
+        return { ...base, totals: { supported: false as const, reason: 'Totals are unavailable for grouped split results.' } };
+      }
+      const matched = parseAqlAggregate(await this.api.aqlQuery(compileTransactionTotal(input, 'count')), operation);
+      const amount = parseAqlAggregate(await this.api.aqlQuery(compileTransactionTotal(input, 'sum')), operation);
+      return { ...base, totals: { supported: true as const, matched, amount } };
+    });
+  }
+
+  bulkUpdateTransactions(
+    items: BulkUpdateItem[],
+    options: { dryRun?: boolean; confirmWrite?: boolean } = {}
+  ) {
+    const operation = 'actual_bulk_update_transactions';
+    return this.run(operation, async () => {
+      const dryRun = options.dryRun ?? true;
+      if (!dryRun && options.confirmWrite !== true) {
+        throw new PublicError('WRITE_CONFIRMATION_REQUIRED', 'Set confirmWrite to true together with dryRun false to execute bulk updates.', operation, false, {
+          details: { requestedIds: items.map(item => item.transactionId) }
+        });
+      }
+      const requestedIds = items.map(item => item.transactionId);
+      const [rowsResult, categories, payees] = await Promise.all([
+        this.api.aqlQuery(compileTransactionsByIds(requestedIds)),
+        this.api.getCategories(),
+        this.api.getPayees()
+      ]);
+      const rows = parseAqlRows(rowsResult, operation);
+      const ordinaryPayeeIds = new Set(payees.filter(payee => payee.transfer_acct == null).map(payee => payee.id));
+      const plan = planBulkTransactionUpdates(items, rows, new Set(categories.map(category => category.id)), ordinaryPayeeIds);
+      const base = {
+        dryRun,
+        executed: false,
+        synchronized: false,
+        verified: false,
+        executable: plan.executable,
+        counts: {
+          requested: plan.requested,
+          matched: plan.matched,
+          wouldUpdate: plan.wouldUpdate,
+          unchanged: plan.unchanged,
+          blocked: plan.blocked
+        },
+        items: plan.items,
+        updatedIds: [] as string[],
+        unchangedIds: plan.items.filter(item => item.status === 'unchanged').map(item => item.transactionId),
+        affectedIds: [] as string[]
+      };
+      if (dryRun) return base;
+      if (!plan.executable) throw new PublicError(
+        'BULK_PREFLIGHT_FAILED',
+        'Bulk execution was refused because one or more transactions are protected.',
+        operation,
+        false,
+        { details: {
+          requestedIds,
+          blocked: plan.items.filter(item => item.status === 'blocked').map(item => ({ id: item.transactionId, reason: item.reason }))
+        } }
+      );
+      const actionable = plan.items.filter(item => item.status === 'would_update');
+      if (!actionable.length) return { ...base, dryRun: false, executed: true, verified: true };
+
+      const attemptedIds: string[] = [];
+      const completedIds: string[] = [];
+      const affectedIds = new Set<string>();
+      const partialError = (
+        message: string,
+        phase: 'local_update' | 'sync' | 'read_back',
+        state: 'local_change_may_have_succeeded' | 'synchronized_but_unverified',
+        cause: unknown
+      ) => new PublicError('BULK_PARTIAL_STATE', message, operation, false, {
+        recoveryAction: state === 'local_change_may_have_succeeded' ? 'actual_sync_then_exact_read' : 'actual_get_transaction',
+        state,
+        partialState: true,
+        details: {
+          failedPhase: phase,
+          requestedIds,
+          attemptedIds,
+          completedIds,
+          pendingIds: actionable.map(item => item.transactionId).filter(id => !completedIds.includes(id)),
+          affectedIds: [...affectedIds]
+        }
+      }, { cause });
+
+      for (const planItem of actionable) {
+        attemptedIds.push(planItem.transactionId);
+        const requested = items.find(item => item.transactionId === planItem.transactionId)!;
+        try {
+          const result = await this.api.updateTransaction(planItem.transactionId, requested.fields as Partial<AdapterTransaction>);
+          completedIds.push(planItem.transactionId);
+          affectedIds.add(planItem.transactionId);
+          if (Array.isArray(result)) for (const value of result) {
+            if (value && typeof value === 'object' && 'id' in value && typeof value.id === 'string') affectedIds.add(value.id);
+          }
+        } catch (error) {
+          if (completedIds.length) {
+            try { await this.api.sync(); }
+            catch (syncError) { throw partialError('Bulk updates stopped locally and synchronization also failed.', 'sync', 'local_change_may_have_succeeded', syncError); }
+            throw partialError('Bulk updates stopped after a partial local sequence; completed changes were synchronized but require exact reads.', 'local_update', 'synchronized_but_unverified', error);
+          }
+          throw new PublicError('MUTATION_FAILED', 'The first bulk local update failed before any completed change.', operation, false, {
+            details: { requestedIds, attemptedIds, completedIds, pendingIds: requestedIds }
+          }, { cause: error });
+        }
+      }
+      try { await this.api.sync(); }
+      catch (error) { throw partialError('Bulk local changes may have succeeded, but synchronization failed.', 'sync', 'local_change_may_have_succeeded', error); }
+
+      let persisted: AdapterTransaction[];
+      try {
+        persisted = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(requestedIds)), operation)
+          .map(transaction => projectTransaction(transaction, operation));
+      } catch (error) {
+        throw partialError('Bulk updates synchronized, but exact read-back failed.', 'read_back', 'synchronized_but_unverified', error);
+      }
+      const persistedById = new Map(persisted.map(transaction => [transaction.id, transaction]));
+      const failedVerificationIds = items.filter(item => {
+        const transaction = persistedById.get(item.transactionId);
+        return transaction === undefined || !desiredStateMatches(transaction, item.fields);
+      }).map(item => item.transactionId);
+      if (failedVerificationIds.length) throw new PublicError(
+        'BULK_VERIFICATION_FAILED',
+        'Bulk updates synchronized, but one or more desired states could not be verified.',
+        operation,
+        false,
+        {
+          recoveryAction: 'actual_get_transaction',
+          state: 'synchronized_but_unverified',
+          partialState: true,
+          details: { requestedIds, attemptedIds, completedIds, affectedIds: [...affectedIds], failedVerificationIds, failedPhase: 'read_back' }
+        }
+      );
+      return {
+        ...base,
+        dryRun: false,
+        executed: true,
+        synchronized: true,
+        verified: true,
+        updatedIds: completedIds,
+        affectedIds: [...affectedIds]
+      };
+    });
   }
 
   private mutate<T>(operation: string, mutation: () => Promise<T>): Promise<T> {
@@ -681,17 +857,78 @@ export class ActualClient {
     });
   }
 
-  importTransactions(accountId: string, transactions: Omit<ImportTransaction, 'account'>[]) {
-    return this.mutate('actual_import_transactions', async () => {
-      const result = await this.api.importTransactions(
-        accountId,
-        transactions.map(transaction => ({ ...transaction, account: accountId })),
-        { reimportDeleted: false }
-      );
+  importTransactions(
+    accountId: string,
+    transactions: Omit<ImportTransaction, 'account'>[],
+    options: ImportRequestOptions = {},
+    expectedPreviewFingerprint?: string
+  ) {
+    const operation = 'actual_import_transactions';
+    return this.run(operation, async () => {
+      const request = normalizeImportRequest(accountId, transactions, options);
+      const requestFingerprint = importRequestFingerprint(request);
+      if (expectedPreviewFingerprint !== undefined && expectedPreviewFingerprint !== requestFingerprint) {
+        throw new PublicError('PREVIEW_FINGERPRINT_MISMATCH', 'The import request does not match the reviewed preview request.', operation, false);
+      }
+      const result = parseImportResult(await this.api.importTransactions(accountId, request.transactions, {
+        ...request.options,
+        dryRun: false
+      }), operation);
+      try { await this.api.sync(); }
+      catch (error) {
+        throw new PublicError(
+          'MUTATION_SYNC_FAILED',
+          'The local import may have succeeded, but synchronization failed. Run actual_sync before retrying.',
+          operation,
+          false,
+          { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true },
+          { cause: error }
+        );
+      }
       return {
         added: result.added,
         updated: result.updated,
-        errors: result.errors.map(error => ({ message: redact(error.message, this.secrets()) }))
+        errors: result.errors.map(error => ({ message: redact(error.message, this.secrets()) })),
+        requestFingerprint,
+        addedCount: result.added.length,
+        updatedCount: result.updated.length,
+        errorCount: result.errors.length
+      };
+    });
+  }
+
+  previewImport(
+    accountId: string,
+    transactions: Omit<ImportTransaction, 'account'>[],
+    options: ImportRequestOptions = {}
+  ) {
+    const operation = 'actual_preview_import';
+    return this.run(operation, async () => {
+      const request = normalizeImportRequest(accountId, transactions, options);
+      const requestFingerprint = importRequestFingerprint(request);
+      const result = parseImportResult(await this.api.importTransactions(accountId, request.transactions, {
+        ...request.options,
+        dryRun: true
+      }), operation);
+      const ignoredCount = result.updatedPreview.filter(item => item.ignored === true).length;
+      const wouldUpdateCount = result.updatedPreview.filter(item =>
+        item.ignored !== true && item.existing !== undefined && item.existing !== false
+      ).length;
+      return {
+        requestFingerprint,
+        wouldAddCount: result.added.length,
+        wouldUpdateCount,
+        ignoredCount,
+        errorCount: result.errors.length,
+        previewOnlyIds: result.added,
+        existingTransactionIds: result.updated,
+        errors: result.errors.map(error => ({ message: redact(error.message, this.secrets()) })),
+        evidence: result.updatedPreview.map(item => ({
+          importedId: item.transaction.imported_id ?? null,
+          ...(item.existing && typeof item.existing === 'object' ? { existingTransactionId: item.existing.id } : {}),
+          ...(item.ignored === undefined ? {} : { ignored: item.ignored }),
+          ...(item.tombstone === undefined ? {} : { tombstone: item.tombstone })
+        }))
       };
     });
   }

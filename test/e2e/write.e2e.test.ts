@@ -11,6 +11,7 @@ import {
   budgetCopyOutputSchema,
   budgetHoldOutputSchema,
   budgetResetHoldOutputSchema,
+  bulkUpdateTransactionsOutputSchema,
   categoryDeletionOutputSchema,
   categoryGroupDeletionOutputSchema,
   categoryGroupMutationOutputSchema,
@@ -24,11 +25,14 @@ import {
   payeeMergeOutputSchema,
   payeeMutationOutputSchema,
   payeeOutputSchema,
+  previewImportOutputSchema,
   ruleDeletionOutputSchema,
   ruleMutationOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
   syncOutputSchema,
+  transactionOutputSchema,
+  searchTransactionsOutputSchema,
   transactionMutationOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
@@ -217,6 +221,127 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     }, transactionMutationOutputSchema);
     registry.release('transaction', transactionId);
     expect(await queryOwned()).toHaveLength(0);
+  });
+
+  it('previews without mutation, binds fingerprinted import, and verifies lookup/search through compiled stdio', async () => {
+    const runId = randomUUID();
+    const previewImportedId = `mcp-e2e-preview:${runId}`;
+    const request = {
+      accountId,
+      transactions: [{
+        date: TEST_DATE, amount: -432, imported_id: previewImportedId,
+        imported_payee: TEMPORARY_TEST_PAYEE, payee_name: TEMPORARY_TEST_PAYEE,
+        notes: 'MCP E2E PREVIEW TEMPORARY'
+      }]
+    };
+    const before = await permanentFixtureFingerprint(fingerprintReader());
+    const preview = await callTool(running, 'actual_preview_import', request, previewImportOutputSchema);
+    expect(preview).toMatchObject({ wouldAddCount: 1, wouldUpdateCount: 0, errorCount: 0 });
+    expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(before);
+    const mismatch = await callToolExpectingError(running, 'actual_import_transactions', {
+      ...request, transactions: [{ ...request.transactions[0], amount: -433 }], expectedPreviewFingerprint: preview.requestFingerprint
+    });
+    expect(mismatch.structuredContent).toMatchObject({ error: { code: 'PREVIEW_FINGERPRINT_MISMATCH' } });
+    assertNoConfiguredSecrets(mismatch);
+    const imported = await callTool(running, 'actual_import_transactions', {
+      ...request, expectedPreviewFingerprint: preview.requestFingerprint
+    }, importTransactionsOutputSchema);
+    for (const id of imported.added) registry.register('transaction', id, previewImportedId);
+    const exact = await callTool(running, 'actual_get_transaction', { transactionId: imported.added[0] }, transactionOutputSchema);
+    expect(exact.transaction).toMatchObject({ id: imported.added[0], imported_id: previewImportedId });
+    const searched = await callTool(running, 'actual_search_transactions', {
+      startDate: TEST_DATE, endDate: TEST_DATE, transactionIds: imported.added, includeTotals: true
+    }, searchTransactionsOutputSchema);
+    expect(searched.transactions.map(item => item.id)).toEqual(imported.added);
+    const repeated = await callTool(running, 'actual_import_transactions', {
+      ...request, expectedPreviewFingerprint: preview.requestFingerprint
+    }, importTransactionsOutputSchema);
+    expect(repeated.added).toEqual([]);
+    expect((await callTool(running, 'actual_search_transactions', {
+      startDate: TEST_DATE, endDate: TEST_DATE, transactionIds: imported.added
+    }, searchTransactionsOutputSchema)).transactions.map(item => item.id)).toEqual(imported.added);
+    for (const id of imported.added) {
+      await callTool(running, 'actual_delete_transaction', { transactionId: id, confirmDestructive: true }, transactionMutationOutputSchema);
+      registry.release('transaction', id);
+    }
+  });
+
+  it('runs bulk dry-run, confirmation, heterogeneous execution, exact read-back, and idempotent repeat through compiled stdio', async () => {
+    const runId = randomUUID();
+    const group = await callTool(running, 'actual_create_category_group', {
+      name: `MCP_E2E_BULK_GROUP_${runId}`
+    }, categoryGroupMutationOutputSchema);
+    registry.register('categoryGroup', group.categoryGroup.id, group.categoryGroup.name);
+    const categoryA = await callTool(running, 'actual_create_category', {
+      name: `MCP_E2E_BULK_CATEGORY_A_${runId}`, groupId: group.categoryGroup.id
+    }, categoryMutationOutputSchema);
+    const categoryB = await callTool(running, 'actual_create_category', {
+      name: `MCP_E2E_BULK_CATEGORY_B_${runId}`, groupId: group.categoryGroup.id
+    }, categoryMutationOutputSchema);
+    registry.register('category', categoryA.category.id, categoryA.category.name);
+    registry.register('category', categoryB.category.id, categoryB.category.name);
+    const payeeA = await callTool(running, 'actual_create_payee', { name: `Mcp E2e Bulk Payee A ${runId}` }, payeeMutationOutputSchema);
+    const payeeB = await callTool(running, 'actual_create_payee', { name: `Mcp E2e Bulk Payee B ${runId}` }, payeeMutationOutputSchema);
+    registry.register('payee', payeeA.payee.id, payeeA.payee.name);
+    registry.register('payee', payeeB.payee.id, payeeB.payee.name);
+    const imported = await callTool(running, 'actual_import_transactions', {
+      accountId,
+      transactions: [0, 1, 2].map(index => ({
+        date: TEST_DATE, amount: -500 - index, imported_id: `mcp-e2e-bulk:${runId}:${index}`,
+        imported_payee: index === 1 ? payeeB.payee.name : payeeA.payee.name,
+        payee_name: index === 1 ? payeeB.payee.name : payeeA.payee.name,
+        notes: `MCP E2E BULK ${index}`
+      }))
+    }, importTransactionsOutputSchema);
+    expect(imported.added).toHaveLength(3);
+    for (const id of imported.added) registry.register('transaction', id, `bulk-${runId}`);
+    const items = [
+      { transactionId: imported.added[0]!, fields: { category: categoryA.category.id, notes: 'MCP E2E BULK REVIEWED A' } },
+      { transactionId: imported.added[1]!, fields: { category: categoryB.category.id, payee: payeeB.payee.id, cleared: true } },
+      { transactionId: imported.added[2]!, fields: { notes: null, cleared: false } }
+    ];
+    const beforeDryRun = await permanentFixtureFingerprint(fingerprintReader());
+    expect(await callTool(running, 'actual_bulk_update_transactions', { items }, bulkUpdateTransactionsOutputSchema)).toMatchObject({
+      dryRun: true, executed: false, executable: true, counts: { requested: 3, blocked: 0 }
+    });
+    expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(beforeDryRun);
+    expect((await callToolExpectingError(running, 'actual_bulk_update_transactions', { items, dryRun: false })).structuredContent)
+      .toMatchObject({ error: { code: 'WRITE_CONFIRMATION_REQUIRED' } });
+    const transferSearch = await callTool(running, 'actual_search_transactions', {
+      startDate: '2026-08-01', endDate: '2026-08-31', limit: 250
+    }, searchTransactionsOutputSchema);
+    const transfer = transferSearch.transactions.find(transaction => transaction.transfer_id != null);
+    if (transfer) {
+      const protectedItems = [{ transactionId: transfer.id, fields: { notes: 'must remain unchanged' } }];
+      expect(await callTool(running, 'actual_bulk_update_transactions', { items: protectedItems }, bulkUpdateTransactionsOutputSchema))
+        .toMatchObject({ executable: false, items: [{ reason: 'TRANSFER_PROTECTED' }] });
+      expect((await callToolExpectingError(running, 'actual_bulk_update_transactions', {
+        items: protectedItems, dryRun: false, confirmWrite: true
+      })).structuredContent).toMatchObject({ error: { code: 'BULK_PREFLIGHT_FAILED' } });
+    }
+    const executed = await callTool(running, 'actual_bulk_update_transactions', {
+      items, dryRun: false, confirmWrite: true
+    }, bulkUpdateTransactionsOutputSchema);
+    expect(executed).toMatchObject({ executed: true, synchronized: true, verified: true });
+    expect(await callTool(running, 'actual_bulk_update_transactions', {
+      items, dryRun: false, confirmWrite: true
+    }, bulkUpdateTransactionsOutputSchema)).toMatchObject({
+      executed: true, synchronized: false, verified: true, counts: { wouldUpdate: 0, unchanged: 3 }
+    });
+    for (const id of imported.added) {
+      await callTool(running, 'actual_delete_transaction', { transactionId: id, confirmDestructive: true }, transactionMutationOutputSchema);
+      registry.release('transaction', id);
+    }
+    for (const payee of [payeeA, payeeB]) {
+      await callTool(running, 'actual_delete_payee', { payeeId: payee.payee.id, confirmDestructive: true }, payeeDeletionOutputSchema);
+      registry.release('payee', payee.payee.id);
+    }
+    for (const category of [categoryA, categoryB]) {
+      await callTool(running, 'actual_delete_category', { categoryId: category.category.id, confirmDestructive: true }, categoryDeletionOutputSchema);
+      registry.release('category', category.category.id);
+    }
+    await callTool(running, 'actual_delete_category_group', { groupId: group.categoryGroup.id, confirmDestructive: true }, categoryGroupDeletionOutputSchema);
+    registry.release('categoryGroup', group.categoryGroup.id);
   });
 
   it('runs a restart-safe payee lifecycle through MCP-only calls', async () => {
@@ -472,6 +597,20 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       ['actual_update_payee', { payeeId: missing, name: '' }],
       ['actual_merge_payees', { sourcePayeeIds: [missing], targetPayeeId: missing, confirmDestructive: true }],
       ['actual_update_rule', { ruleId: missing }],
+      ['actual_get_transaction', { transactionId: '' }],
+      ['actual_search_transactions', { startDate: '2026-01-02', endDate: '2026-01-01' }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', minAmount: 1.5 }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', accountIds: [''] }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', categoryIds: [''] }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', payeeIds: [''] }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', text: '\0' }],
+      ['actual_bulk_update_transactions', { items: [] }],
+      ['actual_bulk_update_transactions', { items: [
+        { transactionId: missing, fields: { notes: 'a' } }, { transactionId: missing, fields: { notes: 'b' } }
+      ] }],
+      ['actual_bulk_update_transactions', { items: [{ transactionId: missing, fields: {} }] }],
+      ['actual_preview_import', { accountId, transactions: [{ date: TEST_DATE, amount: -1, imported_id: 'x' }], dryRun: false }],
+      ['actual_import_transactions', { accountId, transactions: [{ date: TEST_DATE, amount: -1, imported_id: 'x' }], payeeNameNormalization: 'none' }],
       ['actual_create_rule', {
         stage: 'default', conditionsOp: 'and',
         conditions: [{ field: 'amount', op: 'contains', value: 100 }],
@@ -486,6 +625,15 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     for (const [name, args] of cases) {
       const result = await callToolExpectingError(running, name, args);
       assertNoConfiguredSecrets(result);
+      expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+    }
+    for (const [name, args] of [
+      ['actual_bulk_update_transactions', { items: Array.from({ length: 101 }, (_, index) => ({ transactionId: `oversized-${index}`, fields: { cleared: true } })) }],
+      ['actual_preview_import', { accountId, transactions: Array.from({ length: 501 }, (_, index) => ({ date: TEST_DATE, amount: -1, imported_id: `oversized-${index}` })) }]
+    ] as const) {
+      const result = await callToolExpectingError(running, name, args);
+      assertNoConfiguredSecrets(result);
+      expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
     }
     const listed = (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees;
     const detailed = [];

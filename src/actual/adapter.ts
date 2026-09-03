@@ -36,9 +36,12 @@ export interface AdapterRule {
   tombstone?: boolean;
 }
 export interface AdapterTransaction {
+  [key: string]: unknown;
   id: string; account: string; date: string; amount: number; payee?: string | null; category?: string | null;
   notes?: string | null; cleared?: boolean; reconciled?: boolean; imported_id?: string | null;
   imported_payee?: string | null; transfer_id?: string | null; starting_balance_flag?: boolean;
+  is_parent?: boolean; is_child?: boolean; parent_id?: string | null;
+  payee_name?: string | null; category_name?: string | null;
   subtransactions?: AdapterTransaction[];
 }
 export interface AdapterBudgetCategory extends Record<string, unknown> {
@@ -62,6 +65,28 @@ export interface ImportTransaction {
   account: string; date: string; amount: number; imported_id: string; payee_name?: string;
   imported_payee?: string; notes?: string; cleared?: boolean; category?: string;
 }
+
+export interface AdapterImportOptions {
+  defaultCleared: boolean;
+  dryRun: boolean;
+  reimportDeleted: boolean;
+}
+
+export interface AdapterImportPreviewEntry {
+  transaction: AdapterTransaction;
+  existing?: AdapterTransaction | false;
+  ignored?: boolean;
+  tombstone?: boolean;
+}
+
+export interface AdapterImportResult {
+  added: string[];
+  updated: string[];
+  updatedPreview: AdapterImportPreviewEntry[];
+  errors: Array<{ message: string }>;
+}
+
+export type AdapterTransactionQuery = ReturnType<typeof actual.q>;
 
 export interface ActualApiAdapter {
   init(config: { dataDir: string; serverURL: string; password: string; verbose: false }): Promise<void>;
@@ -103,7 +128,8 @@ export interface ActualApiAdapter {
   updateRule(rule: AdapterRule): Promise<AdapterRule>;
   deleteRule(id: string): Promise<boolean>;
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<AdapterTransaction[]>;
-  importTransactions(accountId: string, transactions: ImportTransaction[], options: { reimportDeleted: false }): Promise<{ added: string[]; updated: string[]; errors: Array<{ message: string }> }>;
+  aqlQuery(query: AdapterTransactionQuery): Promise<unknown>;
+  importTransactions(accountId: string, transactions: ImportTransaction[], options: AdapterImportOptions): Promise<AdapterImportResult>;
   updateTransaction(id: string, fields: Partial<AdapterTransaction>): Promise<unknown>;
   deleteTransaction(id: string): Promise<unknown>;
 }
@@ -178,6 +204,7 @@ export const actualApiAdapter: ActualApiAdapter = {
   updateRule: actual.updateRule as unknown as (rule: AdapterRule) => Promise<AdapterRule>,
   deleteRule: actual.deleteRule,
   getTransactions: actual.getTransactions,
+  aqlQuery: actual.aqlQuery,
   importTransactions: actual.importTransactions,
   updateTransaction: actual.updateTransaction,
   deleteTransaction: actual.deleteTransaction

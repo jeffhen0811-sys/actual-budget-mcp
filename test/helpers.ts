@@ -42,7 +42,8 @@ export function fakeAdapter(): ActualApiAdapter {
     updateRule: vi.fn().mockImplementation(async rule => rule),
     deleteRule: vi.fn().mockResolvedValue(true),
     getTransactions: vi.fn().mockResolvedValue([]),
-    importTransactions: vi.fn().mockResolvedValue({ added: [], updated: [], errors: [] }),
+    aqlQuery: vi.fn().mockResolvedValue({ data: [] }),
+    importTransactions: vi.fn().mockResolvedValue({ added: [], updated: [], updatedPreview: [], errors: [] }),
     updateTransaction: vi.fn().mockResolvedValue(undefined),
     deleteTransaction: vi.fn().mockResolvedValue(undefined)
   };

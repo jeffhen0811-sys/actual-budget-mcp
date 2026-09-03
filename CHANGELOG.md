@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.5.0 - 2026-09-02
+
+### Added
+
+- Exact transaction lookup and fixed-table advanced search with typed filters, literal text matching, signed ranges, deterministic pagination, split-aware results, and supported inline totals.
+- Dry-run-first heterogeneous bulk desired-state updates with complete preflight, split/transfer protection, explicit write confirmation, one synchronization, exact read-back, and phased partial-state recovery.
+- Official read-only import preview, shared option normalization, truthful preview-only identifiers, and versioned SHA-256 preview-to-import request binding.
+- Installed ActualQL/import contract coverage plus unit, guarded integration, and compiled stdio E2E coverage for the advanced transaction surface.
+
+### Changed
+
+- Expanded the exact MCP inventory from 42 to 46 tools while preserving every v0.4.0 name, required input, annotation, wrapper, and required output field.
+- Enriched canonical transactions with installed split identity/nesting and resolved payee/category names while preserving null separately from absence.
+- Added supported `defaultCleared` and `reimportDeleted` options and exact optional audit metadata to `actual_import_transactions` while keeping `@actual-app/api` pinned exactly at 26.8.1.
+- Package, lockfile, MCP metadata, documentation, examples, and readiness gates now report 0.5.0.
+
+### Fixed
+
+- Prevented exact split-child lookup from being replaced by a grouped parent and prevented split-parent double counting in inline totals.
+- Prevented caller-controlled raw ActualQL, wildcard expansion, unsupported normalization options, unconfirmed bulk writes, split rewrites, and relational transfer edits.
+- Prevented preview-generated IDs from being described as persisted, preview from synchronizing, fingerprint mismatches from reaching mutation, and compound failures from claiming rollback or automatic retry.
+
 ## 0.4.0 - 2026-09-01
 
 ### Added

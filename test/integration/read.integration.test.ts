@@ -12,6 +12,9 @@ import {
   payeesOutputSchema,
   ruleSchema,
   rulesOutputSchema,
+  searchTransactionsInputSchema,
+  searchTransactionsOutputSchema,
+  transactionOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
 import {
@@ -149,5 +152,78 @@ realDescribe.sequential('real Actual read integration', () => {
     expect(() => transactionsOutputSchema.parse({ transactions })).not.toThrow();
     const names = transactions.map(transaction => transaction.payee ? payeeNames.get(transaction.payee) : undefined);
     expect(names).toEqual(expect.arrayContaining(['Netflix Teste', 'Restaurante Teste', 'Loja Online Teste']));
+  });
+
+  it('performs exact lookup and typed cross-account search through the installed query path', async () => {
+    const accounts = await client.listAccounts();
+    const selectedAccounts = accounts.filter(account => [REQUIRED_TEST_ACCOUNT_NAME, CARD_TEST_ACCOUNT_NAME].includes(account.name));
+    const checking = selectedAccounts.find(account => account.name === REQUIRED_TEST_ACCOUNT_NAME)!;
+    const known = await client.getTransactions(checking.id, '2026-08-01', '2026-08-31');
+    const transaction = known.find(item => item.notes === 'Compra fake') ?? known[0]!;
+    const exact = await client.getTransaction(transaction.id);
+    expect(() => transactionOutputSchema.parse({ transaction: exact })).not.toThrow();
+    expect(exact.id).toBe(transaction.id);
+    await expect(client.getTransaction('mcp-read-missing-transaction')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    const base = searchTransactionsInputSchema.parse({
+      startDate: '2026-08-01', endDate: '2026-08-31', accountIds: selectedAccounts.map(account => account.id),
+      limit: 100, includeTotals: true
+    });
+    const searched = await client.searchTransactions(base);
+    expect(() => searchTransactionsOutputSchema.parse(searched)).not.toThrow();
+    expect(searched.transactions.some(item => item.id === transaction.id)).toBe(true);
+    expect('totals' in searched ? searched.totals : undefined).toMatchObject({ supported: true });
+
+    for (const filter of [
+      { transactionIds: [transaction.id] },
+      ...(transaction.payee ? [{ payeeIds: [transaction.payee] }] : []),
+      ...(transaction.category ? [{ categoryIds: [transaction.category] }] : []),
+      { importSource: 'manual' as const },
+      { importSource: 'imported' as const },
+      ...(transaction.cleared === undefined ? [] : [{ cleared: transaction.cleared }]),
+      { minAmount: transaction.amount, maxAmount: transaction.amount },
+      { text: transaction.notes ?? transaction.imported_payee ?? 'Compra fake' }
+    ]) {
+      const result = await client.searchTransactions(searchTransactionsInputSchema.parse({
+        startDate: '2026-08-01', endDate: '2026-08-31', ...filter
+      }));
+      expect(() => searchTransactionsOutputSchema.parse(result)).not.toThrow();
+    }
+
+    const uncategorized = await client.searchTransactions(searchTransactionsInputSchema.parse({
+      startDate: '2026-08-01', endDate: '2026-08-31', uncategorizedOnly: true
+    }));
+    expect(uncategorized.transactions.every(item => item.category == null && item.transfer_id == null && item.is_parent !== true)).toBe(true);
+  });
+
+  it('keeps deterministic pagination and validates every supported split and sort mode', async () => {
+    for (const sort of [
+      'date_desc', 'date_asc', 'amount_desc', 'amount_asc',
+      'payee_asc', 'payee_desc', 'category_asc', 'category_desc'
+    ] as const) {
+      const input = searchTransactionsInputSchema.parse({ startDate: '2026-08-01', endDate: '2026-08-31', sort, limit: 2, offset: 0 });
+      const first = await client.searchTransactions(input);
+      const second = await client.searchTransactions(input);
+      expect(first.transactions.map(item => item.id)).toEqual(second.transactions.map(item => item.id));
+    }
+    const grouped = await client.searchTransactions(searchTransactionsInputSchema.parse({
+      startDate: '2026-08-01', endDate: '2026-08-31', splitMode: 'grouped', includeTotals: true
+    }));
+    expect('totals' in grouped ? grouped.totals : undefined).toMatchObject({ supported: false });
+    expect(() => searchTransactionsOutputSchema.parse(grouped)).not.toThrow();
+  });
+
+  it('records non-gating advanced-search observations without financial values', async () => {
+    const startedPage = performance.now();
+    const page = await client.searchTransactions(searchTransactionsInputSchema.parse({
+      startDate: '2026-08-01', endDate: '2026-08-31', limit: 100
+    }));
+    const pageMs = Math.round(performance.now() - startedPage);
+    const startedTotals = performance.now();
+    await client.searchTransactions(searchTransactionsInputSchema.parse({
+      startDate: '2026-08-01', endDate: '2026-08-31', limit: 100, includeTotals: true
+    }));
+    const totalsMs = Math.round(performance.now() - startedTotals);
+    console.info(`advanced-search observation: returned=${page.page.returned} pageMs=${pageMs} totalsMs=${totalsMs}`);
   });
 });

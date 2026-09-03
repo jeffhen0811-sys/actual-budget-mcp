@@ -1,14 +1,19 @@
 import { z } from 'zod/v4';
+import type { AdapterTransaction } from '../actual/adapter.js';
 import {
   batchSchema,
   budgetMonthSchema,
   budgetResultLimitSchema,
   boundedTextSchema,
   DEFAULT_BUDGET_CATEGORY_RESULTS,
+  DEFAULT_TRANSACTION_SEARCH_RESULTS,
   entityNameSchema,
   integerAmountSchema,
   isoDateSchema,
   MAX_DATE_RANGE_DAYS,
+  MAX_BULK_TRANSACTION_UPDATES,
+  MAX_TRANSACTION_SEARCH_OFFSET,
+  MAX_TRANSACTION_SEARCH_RESULTS,
   opaqueIdSchema,
   positiveIntegerAmountSchema
 } from '../schemas.js';
@@ -45,7 +50,7 @@ export const accountSchema = z.object({
 const nullableOptionalId = opaqueIdSchema.nullable().optional();
 const nullableOptionalText = z.string().nullable().optional();
 
-export const transactionSchema = z.object({
+export const transactionSchema: z.ZodType<AdapterTransaction> = (z.lazy(() => z.object({
   id: opaqueIdSchema,
   account: opaqueIdSchema,
   date: isoDateSchema,
@@ -58,8 +63,15 @@ export const transactionSchema = z.object({
   transfer_id: nullableOptionalId,
   cleared: z.boolean().optional(),
   reconciled: z.boolean().optional(),
-  starting_balance_flag: z.boolean().optional()
-}).strict().describe('Normalized Actual transaction. Explicit null values from Actual are preserved; absent optional fields remain absent.');
+  starting_balance_flag: z.boolean().optional(),
+  is_parent: z.boolean().optional(),
+  is_child: z.boolean().optional(),
+  parent_id: nullableOptionalId,
+  payee_name: nullableOptionalText,
+  category_name: nullableOptionalText,
+  subtransactions: z.array(transactionSchema).optional()
+}).strict()) as z.ZodType<AdapterTransaction>)
+  .describe('Normalized Actual transaction. Explicit null values from Actual are preserved; absent optional fields remain absent.');
 
 export const healthOutputSchema = z.object({
   connected: z.boolean(),
@@ -124,6 +136,64 @@ export const getTransactionsInputSchema = z
   })
   .describe(`Account and inclusive transaction date range, limited to ${MAX_DATE_RANGE_DAYS} days.`);
 
+export const getTransactionInputSchema = z.object({ transactionId: opaqueIdSchema }).strict()
+  .describe('Exact opaque transaction identifier.');
+
+export const transactionOutputSchema = z.object({ transaction: transactionSchema }).strict()
+  .describe('The exact requested canonical transaction.');
+
+const uniqueIdListSchema = z.array(opaqueIdSchema).min(1).max(MAX_TRANSACTION_SEARCH_RESULTS)
+  .refine(values => new Set(values).size === values.length, 'Identifier lists must not contain duplicates.');
+
+export const searchTransactionsInputSchema = z.object({
+  startDate: isoDateSchema,
+  endDate: isoDateSchema,
+  accountIds: uniqueIdListSchema.optional(),
+  transactionIds: uniqueIdListSchema.optional(),
+  payeeIds: uniqueIdListSchema.optional(),
+  categoryIds: uniqueIdListSchema.optional(),
+  uncategorizedOnly: z.boolean().optional(),
+  importSource: z.enum(['any', 'manual', 'imported']).default('any'),
+  cleared: z.boolean().optional(),
+  minAmount: integerAmountSchema.optional(),
+  maxAmount: integerAmountSchema.optional(),
+  text: boundedTextSchema.min(1, 'Search text must not be empty.')
+    .refine(value => !value.includes('\0'), 'Search text must not contain a null byte.').optional(),
+  splitMode: z.enum(['inline', 'grouped']).default('inline'),
+  sort: z.enum([
+    'date_desc', 'date_asc', 'amount_desc', 'amount_asc',
+    'payee_asc', 'payee_desc', 'category_asc', 'category_desc'
+  ]).default('date_desc'),
+  limit: z.number().int().min(1).max(MAX_TRANSACTION_SEARCH_RESULTS).default(DEFAULT_TRANSACTION_SEARCH_RESULTS),
+  offset: z.number().int().min(0).max(MAX_TRANSACTION_SEARCH_OFFSET).default(0),
+  includeTotals: z.boolean().default(false)
+}).strict().superRefine((value, context) => {
+  const start = Date.parse(`${value.startDate}T00:00:00Z`);
+  const end = Date.parse(`${value.endDate}T00:00:00Z`);
+  if (start > end) context.addIssue({ code: 'custom', path: ['endDate'], message: 'endDate must be on or after startDate.' });
+  else if (Math.floor((end - start) / 86_400_000) + 1 > MAX_DATE_RANGE_DAYS) context.addIssue({
+    code: 'custom', path: ['endDate'], message: `The inclusive date range must not exceed ${MAX_DATE_RANGE_DAYS} days.`
+  });
+  if (value.minAmount !== undefined && value.maxAmount !== undefined && value.minAmount > value.maxAmount) {
+    context.addIssue({ code: 'custom', path: ['maxAmount'], message: 'maxAmount must be greater than or equal to minAmount.' });
+  }
+  if (value.uncategorizedOnly && value.categoryIds?.length) context.addIssue({
+    code: 'custom', path: ['categoryIds'], message: 'categoryIds cannot be combined with uncategorizedOnly.'
+  });
+}).describe('Bounded typed cross-account transaction search.');
+
+const searchTotalsSchema = z.discriminatedUnion('supported', [
+  z.object({ supported: z.literal(true), matched: z.number().int().nonnegative(), amount: integerAmountSchema }).strict(),
+  z.object({ supported: z.literal(false), reason: z.string() }).strict()
+]);
+
+export const searchTransactionsOutputSchema = z.object({
+  transactions: z.array(transactionSchema),
+  page: z.object({ limit: z.number().int(), offset: z.number().int(), returned: z.number().int().nonnegative() }).strict(),
+  splitMode: z.enum(['inline', 'grouped']),
+  totals: searchTotalsSchema.optional()
+}).strict().describe('Deterministic transaction search page and optional supported totals.');
+
 export const importTransactionItemSchema = z
   .object({
     date: isoDateSchema,
@@ -140,14 +210,99 @@ export const importTransactionItemSchema = z
 
 export const importTransactionsInputSchema = z.object({
   accountId: opaqueIdSchema,
-  transactions: batchSchema(importTransactionItemSchema)
+  transactions: batchSchema(importTransactionItemSchema),
+  defaultCleared: z.boolean().optional(),
+  reimportDeleted: z.boolean().optional(),
+  expectedPreviewFingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/, 'Expected a versioned SHA-256 preview fingerprint.').optional()
 }).strict().describe('Target account and one to 500 idempotent import items.');
 
 export const importTransactionsOutputSchema = z.object({
   added: z.array(opaqueIdSchema),
   updated: z.array(opaqueIdSchema),
-  errors: z.array(z.object({ message: z.string() }).strict())
+  errors: z.array(z.object({ message: z.string() }).strict()),
+  requestFingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/).optional(),
+  addedCount: z.number().int().nonnegative().optional(),
+  updatedCount: z.number().int().nonnegative().optional(),
+  errorCount: z.number().int().nonnegative().optional()
 }).strict().describe('Official reconciliation outcome with sanitized item errors.');
+
+export const previewImportInputSchema = z.object({
+  accountId: opaqueIdSchema,
+  transactions: batchSchema(importTransactionItemSchema),
+  defaultCleared: z.boolean().optional(),
+  reimportDeleted: z.boolean().optional()
+}).strict().describe('Read-only official import preview request; dry-run cannot be disabled.');
+
+export const previewImportOutputSchema = z.object({
+  requestFingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/),
+  wouldAddCount: z.number().int().nonnegative(),
+  wouldUpdateCount: z.number().int().nonnegative(),
+  ignoredCount: z.number().int().nonnegative(),
+  errorCount: z.number().int().nonnegative(),
+  previewOnlyIds: z.array(opaqueIdSchema).describe('Generated preview identifiers that are not persisted transaction IDs.'),
+  existingTransactionIds: z.array(opaqueIdSchema),
+  errors: z.array(z.object({ message: z.string() }).strict()),
+  evidence: z.array(z.object({
+    importedId: z.string().nullable(),
+    existingTransactionId: opaqueIdSchema.optional(),
+    ignored: z.boolean().optional(),
+    tombstone: z.boolean().optional()
+  }).strict())
+}).strict().describe('Sanitized official reconciliation preview evidence and request fingerprint.');
+
+export const bulkTransactionFieldsSchema = z.object({
+  category: opaqueIdSchema.nullable().optional(),
+  payee: opaqueIdSchema.nullable().optional(),
+  notes: boundedTextSchema.nullable().optional(),
+  cleared: z.boolean().optional()
+}).strict().refine(value => Object.keys(value).length > 0, 'At least one desired-state field is required.');
+
+export const bulkTransactionItemSchema = z.object({
+  transactionId: opaqueIdSchema,
+  fields: bulkTransactionFieldsSchema
+}).strict();
+
+export const bulkUpdateTransactionsInputSchema = z.object({
+  items: z.array(bulkTransactionItemSchema).min(1).max(
+    MAX_BULK_TRANSACTION_UPDATES,
+    `Bulk update must not exceed ${MAX_BULK_TRANSACTION_UPDATES} transactions.`
+  ),
+  dryRun: z.boolean().default(true),
+  confirmWrite: z.boolean().optional()
+}).strict().superRefine((value, context) => {
+  const ids = value.items.map(item => item.transactionId);
+  if (new Set(ids).size !== ids.length) context.addIssue({
+    code: 'custom', path: ['items'], message: 'Bulk transaction IDs must be unique.'
+  });
+}).describe('One to 100 unique heterogeneous desired-state transaction updates; dry-run defaults to true.');
+
+const bulkPlanItemSchema = z.object({
+  transactionId: opaqueIdSchema,
+  status: z.enum(['would_update', 'unchanged', 'blocked']),
+  changedFields: z.array(z.enum(['category', 'payee', 'notes', 'cleared'])),
+  before: transactionSchema,
+  after: transactionSchema,
+  reason: z.enum(['SPLIT_TRANSACTION_PROTECTED', 'TRANSFER_PROTECTED']).optional()
+}).strict();
+
+export const bulkUpdateTransactionsOutputSchema = z.object({
+  dryRun: z.boolean(),
+  executed: z.boolean(),
+  synchronized: z.boolean(),
+  verified: z.boolean(),
+  executable: z.boolean(),
+  counts: z.object({
+    requested: z.number().int().nonnegative(),
+    matched: z.number().int().nonnegative(),
+    wouldUpdate: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    blocked: z.number().int().nonnegative()
+  }).strict(),
+  items: z.array(bulkPlanItemSchema).max(MAX_BULK_TRANSACTION_UPDATES),
+  updatedIds: z.array(opaqueIdSchema),
+  unchangedIds: z.array(opaqueIdSchema),
+  affectedIds: z.array(opaqueIdSchema)
+}).strict().describe('Auditable bulk plan or verified single-sync execution result.');
 
 export const updateTransactionFieldsSchema = z
   .object({

@@ -42,6 +42,14 @@ import {
   healthOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
+  getTransactionInputSchema,
+  transactionOutputSchema,
+  searchTransactionsInputSchema,
+  searchTransactionsOutputSchema,
+  previewImportInputSchema,
+  previewImportOutputSchema,
+  bulkUpdateTransactionsInputSchema,
+  bulkUpdateTransactionsOutputSchema,
   holdBudgetInputSchema,
   listBudgetMonthsOutputSchema,
   mergePayeesInputSchema,
@@ -80,6 +88,10 @@ export interface ToolRuntime {
   listCategories: ActualClient['listCategories'];
   listPayees: ActualClient['listPayees'];
   getTransactions: ActualClient['getTransactions'];
+  getTransaction: ActualClient['getTransaction'];
+  searchTransactions: ActualClient['searchTransactions'];
+  previewImport: ActualClient['previewImport'];
+  bulkUpdateTransactions: ActualClient['bulkUpdateTransactions'];
   importTransactions: ActualClient['importTransactions'];
   updateTransaction: ActualClient['updateTransaction'];
   deleteTransaction: ActualClient['deleteTransaction'];
@@ -117,7 +129,7 @@ export interface ToolRuntime {
   copyBudgetMonth: ActualClient['copyBudgetMonth'];
 }
 
-export const TOOL_NAMES = [
+export const V040_TOOL_NAMES = [
   'actual_health',
   'actual_list_accounts',
   'actual_get_account',
@@ -162,6 +174,14 @@ export const TOOL_NAMES = [
   'actual_copy_budget_month'
 ] as const;
 
+export const TOOL_NAMES = [
+  ...V040_TOOL_NAMES,
+  'actual_get_transaction',
+  'actual_search_transactions',
+  'actual_bulk_update_transactions',
+  'actual_preview_import'
+] as const;
+
 function acceptUnconfirmedForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
   const standard = schema['~standard'];
   type ValidateValue = Parameters<typeof standard.validate>[0];
@@ -191,8 +211,8 @@ const deleteRuleToolInputSchema = acceptUnconfirmedForStructuredError(deleteRule
 
 export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.4.0' },
-    { instructions: 'Amounts are integer minor units and budget months use YYYY-MM. Budget copy defaults to a dry run. Use confirmations only after explicit authorization.' }
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.5.0' },
+    { instructions: 'Amounts are signed integer minor units. Transaction bulk update and budget copy default to dry runs. Use write confirmations only after explicit authorization.' }
   );
 
   server.registerTool(
@@ -418,6 +438,81 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
   );
 
   server.registerTool(
+    'actual_get_transaction',
+    {
+      title: 'Get exact Actual transaction',
+      description: 'Get one exact transaction by opaque ID, preserving transfer, starting-balance, and split identity.',
+      inputSchema: getTransactionInputSchema,
+      outputSchema: transactionOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ transactionId }) => {
+      try { return successResult({ transaction: await runtime.getTransaction(transactionId) }); }
+      catch (error) { return toolError(error, 'actual_get_transaction', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_search_transactions',
+    {
+      title: 'Search Actual transactions',
+      description: 'Search transactions across accounts with typed filters, signed amounts, split-aware deterministic pagination, and optional totals.',
+      inputSchema: searchTransactionsInputSchema,
+      outputSchema: searchTransactionsOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.searchTransactions(input as Parameters<ToolRuntime['searchTransactions']>[0])); }
+      catch (error) { return toolError(error, 'actual_search_transactions', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_preview_import',
+    {
+      title: 'Preview Actual transaction import',
+      description: 'Run the official reconciliation pipeline in read-only dry-run mode and return truthful preview evidence plus a request fingerprint.',
+      inputSchema: previewImportInputSchema,
+      outputSchema: previewImportOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ accountId, transactions, defaultCleared, reimportDeleted }) => {
+      try {
+        return successResult(await runtime.previewImport(
+          accountId,
+          transactions as Omit<ImportTransaction, 'account'>[],
+          {
+            ...(defaultCleared === undefined ? {} : { defaultCleared }),
+            ...(reimportDeleted === undefined ? {} : { reimportDeleted })
+          }
+        ));
+      } catch (error) { return toolError(error, 'actual_preview_import', logger); }
+    }
+  );
+
+  server.registerTool(
+    'actual_bulk_update_transactions',
+    {
+      title: 'Bulk update Actual transactions safely',
+      description: 'Plan up to 100 heterogeneous desired-state updates in dry-run mode by default; execution requires dryRun false and confirmWrite true.',
+      inputSchema: bulkUpdateTransactionsInputSchema,
+      outputSchema: bulkUpdateTransactionsOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ items, dryRun, confirmWrite }) => {
+      try {
+        return successResult(await runtime.bulkUpdateTransactions(
+          items as Parameters<ToolRuntime['bulkUpdateTransactions']>[0],
+          {
+            ...(dryRun === undefined ? {} : { dryRun }),
+            ...(confirmWrite === undefined ? {} : { confirmWrite })
+          }
+        ));
+      } catch (error) { return toolError(error, 'actual_bulk_update_transactions', logger); }
+    }
+  );
+
+  server.registerTool(
     'actual_import_transactions',
     {
       title: 'Import Actual transactions',
@@ -426,8 +521,18 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
       outputSchema: importTransactionsOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
     },
-    async ({ accountId, transactions }) => {
-      try { return successResult(await runtime.importTransactions(accountId, transactions as Omit<ImportTransaction, 'account'>[])); } catch (error) { return toolError(error, 'actual_import_transactions', logger); }
+    async ({ accountId, transactions, defaultCleared, reimportDeleted, expectedPreviewFingerprint }) => {
+      try {
+        return successResult(await runtime.importTransactions(
+          accountId,
+          transactions as Omit<ImportTransaction, 'account'>[],
+          {
+            ...(defaultCleared === undefined ? {} : { defaultCleared }),
+            ...(reimportDeleted === undefined ? {} : { reimportDeleted })
+          },
+          expectedPreviewFingerprint
+        ));
+      } catch (error) { return toolError(error, 'actual_import_transactions', logger); }
     }
   );
 

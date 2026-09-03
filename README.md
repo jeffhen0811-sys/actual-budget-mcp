@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.4.0 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.5.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Forty-two read, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
+- Forty-six read, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -56,7 +56,7 @@ Do not use the Actual Server container's `/data` volume as `ACTUAL_DATA_DIR`. Ru
 
 ## Hermes Setup
 
-Install under `/opt/data/mcps/actual-budget-mcp` and keep the cache at `/opt/data/actual-budget-mcp/cache`. Hermes and Actual run in separate containers, so `localhost` inside Hermes does not reach Actual. Use the NAS-published address, such as `http://192.168.3.99:15006`, or a shared Docker-network hostname.
+Install under `/opt/data/mcps/actual-budget-mcp` and keep the cache at `/opt/data/actual-budget-mcp/cache`. Hermes and Actual run in separate containers, so `localhost` inside Hermes does not reach Actual. Use the operator-configured published address or a shared Docker-network hostname.
 
 ```yaml
 name: actual-budget
@@ -64,7 +64,7 @@ command: node
 args:
   - /opt/data/mcps/actual-budget-mcp/dist/index.js
 env:
-  ACTUAL_SERVER_URL: http://192.168.3.99:15006
+  ACTUAL_SERVER_URL: http://actual-server:5006
   ACTUAL_PASSWORD: ${ACTUAL_PASSWORD}
   ACTUAL_SYNC_ID: ${ACTUAL_SYNC_ID}
   ACTUAL_DATA_DIR: /opt/data/actual-budget-mcp/cache
@@ -86,7 +86,11 @@ All amounts use Actual's integer minor-unit representation: for example, `12030`
 | `actual_list_categories` | `{}` | Lists nested category groups and categories. |
 | `actual_list_payees` | `{}` | Lists payees. |
 | `actual_get_transactions` | `accountId`, `startDate`, `endDate` | Reads an inclusive range of at most 366 days. Results over 5,000 transactions are rejected rather than truncated. |
-| `actual_import_transactions` | `accountId`, `transactions` | Imports 1–500 items through reconciliation; every item requires `date`, integer `amount`, and `imported_id`. |
+| `actual_get_transaction` | `transactionId` | Gets one exact ordinary, imported, transfer, starting-balance, split-parent, or split-child transaction. |
+| `actual_search_transactions` | bounded dates plus typed filters | Searches across accounts with signed amounts, deterministic pagination, split modes, and optional inline totals. |
+| `actual_preview_import` | `accountId`, `transactions`, supported options | Runs the official reconciliation pipeline in forced read-only dry-run mode and returns a request fingerprint. |
+| `actual_bulk_update_transactions` | 1–100 desired-state items | Plans by default; confirmed writes update serially, synchronize once, and verify exact read-back. |
+| `actual_import_transactions` | `accountId`, `transactions`, optional supported options/fingerprint | Imports 1–500 items through reconciliation; every item requires `date`, integer `amount`, and `imported_id`. |
 | `actual_update_transaction` | `transactionId`, `fields` | Updates one or more of `category`, `payee`, `notes`, `cleared`, `date`, and `amount`. |
 | `actual_delete_transaction` | `transactionId`, `confirmDestructive: true` | Permanently deletes a transaction after explicit confirmation. |
 
@@ -107,7 +111,53 @@ Example idempotent import input:
 }
 ```
 
-Imports use `reimportDeleted: false`. A repeated `imported_id` is reconciled without creating a duplicate, and a deleted imported transaction is not recreated by default. Every successful import, update, or deletion is synchronized before success is returned.
+Imports default to `defaultCleared: true` and `reimportDeleted: false`. A repeated `imported_id` is reconciled without creating a duplicate, and a deleted imported transaction is not recreated by default. Every successful import, update, or deletion is synchronized before success is returned.
+
+## Advanced transaction operations
+
+All transaction amounts remain signed integers in Actual's minor-unit representation. An expense such as USD 12.99 is `-1299`; the search compiler compares `-1299` directly and never converts it to an absolute spending magnitude.
+
+`actual_search_transactions` requires `startDate` and `endDate` in `YYYY-MM-DD` form and limits the inclusive interval to 366 days. It accepts exact account, transaction, payee, and category ID lists; `uncategorizedOnly`; `manual` or `imported` source; cleared state; signed `minAmount`/`maxAmount`; and literal text across resolved payee name, imported payee, and notes. `%`, `?`, and backslash in text are literals rather than caller-controlled wildcards. No raw ActualQL, query object, expression, regex, SQL, or SQLite access is public.
+
+Search defaults to `limit: 100`, allows at most 250 items, and accepts offsets from 0 through 10,000. Sort enums cover date, amount, payee, and category in both directions; transaction ID is always the final deterministic tie-breaker. `splitMode: "inline"` is the default and returns ordinary transactions plus split children while omitting split parents. `splitMode: "grouped"` returns each matching group once with nested children. Exact count and signed amount totals are supported only for inline mode; grouped requests explicitly report totals as unsupported.
+
+```json
+{
+  "startDate": "2026-08-01",
+  "endDate": "2026-08-31",
+  "accountIds": ["account-id"],
+  "importSource": "imported",
+  "minAmount": -50000,
+  "maxAmount": -1000,
+  "text": "market 100%",
+  "sort": "date_desc",
+  "limit": 100,
+  "offset": 0,
+  "includeTotals": true
+}
+```
+
+Bulk update items can independently request desired `category`, `payee`, `notes`, and `cleared` states. Omitted fields are unchanged. `dryRun` defaults to `true`; execution requires both `dryRun: false` and `confirmWrite: true`. The complete batch is preflighted before writes, unchanged items are skipped, local updates run serially, one synchronization follows, and every requested ID is read back. All split parents and children are protected. Transfer transactions permit only an independent `cleared` change. Category/payee null clearing is rejected in v0.5.0 because the pinned contract has not passed every required declaration, bundle, and controlled-server proof; note clearing is supported with explicit `null`.
+
+```json
+{
+  "items": [
+    {"transactionId":"transaction-a","fields":{"category":"category-id","notes":"Reviewed"}},
+    {"transactionId":"transaction-b","fields":{"cleared":true}}
+  ]
+}
+```
+
+Import preview accepts the same import items and supported `defaultCleared`/`reimportDeleted` options as execution, but it has no `dryRun` switch and never synchronizes. Generated would-add IDs are labeled `previewOnlyIds`; they are not persisted transaction IDs and must not be cleanup targets. The returned `requestFingerprint` is a versioned SHA-256 hash of normalized account, supported options, and ordered transactions. Passing it as `expectedPreviewFingerprint` proves request equality only—it is not a budget-state lock.
+
+Recommended safe import workflow:
+
+1. Call `actual_preview_import` with the complete intended payload and options.
+2. Review would-add, would-update, ignored, existing-ID, preview-only-ID, and error evidence.
+3. Submit the identical payload/options to `actual_import_transactions` with `expectedPreviewFingerprint`.
+4. Verify persisted IDs through `actual_get_transaction` or `actual_search_transactions`.
+
+Unsupported options such as `payeeNameNormalization` are rejected. Actual 26.8.1 performs its installed title-case normalization internally; this MCP does not imitate another SDK version.
 
 ## Budget structure administration
 
@@ -365,13 +415,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.4.0 .
+docker build -t actual-budget-mcp:0.5.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.4.0
+  actual-budget-mcp:0.5.0
 ```
 
 ## Security
@@ -397,4 +447,4 @@ docker run --rm -i \
 
 ## Scope
 
-Version 0.4.0 does not include Account Groups, reorder operations, ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.
+Version 0.5.0 does not include Account Groups, reorder operations, public/raw ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.

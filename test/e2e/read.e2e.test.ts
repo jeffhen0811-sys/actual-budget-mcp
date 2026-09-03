@@ -11,6 +11,8 @@ import {
   payeesOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
+  searchTransactionsOutputSchema,
+  transactionOutputSchema,
   transactionsOutputSchema
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
@@ -31,10 +33,10 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers exactly 42 v0.4.0 tools with strict schemas and compatible annotations through stdio', async () => {
+  it('discovers exactly 46 v0.5.0 tools with strict schemas and compatible annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(42);
+    expect(tools).toHaveLength(46);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
@@ -48,6 +50,12 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     }
     expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
     expect(tools.find(tool => tool.name === 'actual_copy_budget_month')?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+    for (const name of ['actual_get_transaction', 'actual_search_transactions', 'actual_preview_import']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+    }
+    expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: false, idempotentHint: true
+    });
   });
 
   it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
@@ -63,7 +71,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       });
       assertNoConfiguredSecrets(result);
     }
-    expect((await running.client.listTools()).tools).toHaveLength(42);
+    expect((await running.client.listTools()).tools).toHaveLength(46);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
@@ -127,6 +135,41 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     }
   });
 
+  it('executes exact lookup and advanced search filters, ordering, pagination, totals, and split modes through compiled stdio', async () => {
+    const { accounts } = await callTool(running, 'actual_list_accounts', {}, accountsOutputSchema);
+    const account = accounts.find(item => item.name === REQUIRED_TEST_ACCOUNT_NAME)!;
+    const known = (await callTool(running, 'actual_get_transactions', {
+      accountId: account.id, startDate: '2026-08-01', endDate: '2026-08-31'
+    }, transactionsOutputSchema)).transactions;
+    const transaction = known.find(item => item.notes === 'Compra fake') ?? known[0]!;
+    const exact = await callTool(running, 'actual_get_transaction', { transactionId: transaction.id }, transactionOutputSchema);
+    expect(exact.transaction.id).toBe(transaction.id);
+    for (const args of [
+      { transactionIds: [transaction.id] },
+      { accountIds: [account.id] },
+      ...(transaction.payee ? [{ payeeIds: [transaction.payee] }] : []),
+      ...(transaction.category ? [{ categoryIds: [transaction.category] }] : []),
+      { importSource: 'manual' },
+      { importSource: 'imported' },
+      ...(transaction.cleared === undefined ? [] : [{ cleared: transaction.cleared }]),
+      { minAmount: transaction.amount, maxAmount: transaction.amount },
+      { text: transaction.notes ?? 'Compra fake' },
+      { uncategorizedOnly: true },
+      { splitMode: 'grouped', includeTotals: true }
+    ]) {
+      const result = await callTool(running, 'actual_search_transactions', {
+        startDate: '2026-08-01', endDate: '2026-08-31', limit: 100, offset: 0, ...args
+      }, searchTransactionsOutputSchema);
+      expect(result.page.returned).toBe(result.transactions.length);
+    }
+    for (const sort of ['date_desc', 'date_asc', 'amount_desc', 'amount_asc', 'payee_asc', 'payee_desc', 'category_asc', 'category_desc']) {
+      const args = { startDate: '2026-08-01', endDate: '2026-08-31', sort, limit: 2, offset: 0, includeTotals: true };
+      const first = await callTool(running, 'actual_search_transactions', args, searchTransactionsOutputSchema);
+      const second = await callTool(running, 'actual_search_transactions', args, searchTransactionsOutputSchema);
+      expect(first.transactions.map(item => item.id)).toEqual(second.transactions.map(item => item.id));
+    }
+  });
+
   it('returns structured errors for invalid input, remains alive, and never leaks credentials', async () => {
     const cases = [
       ['actual_get_account', { accountId: 'missing-account-id' }],
@@ -134,11 +177,20 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       ['actual_get_rule', { ruleId: 'missing-rule-id' }],
       ['actual_get_transactions', { accountId: 'invalid', startDate: '2026-02-30', endDate: '2026-03-01' }],
       ['actual_get_transactions', { accountId: 'invalid', startDate: '2024-01-01', endDate: '2025-01-01' }],
+      ['actual_get_transaction', { transactionId: 'missing-transaction-id' }],
+      ['actual_search_transactions', { startDate: '2026-02-30', endDate: '2026-03-01' }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', minAmount: 2, maxAmount: 1 }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', limit: 251 }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', offset: 10001 }],
+      ['actual_search_transactions', { startDate: '2026-01-01', endDate: '2026-01-02', splitMode: 'all' }],
+      ['actual_preview_import', { accountId: 'a', transactions: [{ date: '2026-01-01', amount: 1, imported_id: 'x' }], dryRun: false }],
+      ['actual_bulk_update_transactions', { items: [] }],
       ['actual_delete_transaction', { transactionId: 'missing-transaction-id', confirmDestructive: false }]
     ] as const;
     for (const [name, args] of cases) {
       const error = await callToolExpectingError(running, name, args);
       assertNoConfiguredSecrets(error);
+      expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
     }
     expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
     assertNoConfiguredSecrets(running.stderr());

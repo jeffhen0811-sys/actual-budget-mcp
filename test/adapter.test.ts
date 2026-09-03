@@ -6,7 +6,7 @@ const sdk = vi.hoisted(() => ({
   reopenAccount: vi.fn(), deleteAccount: vi.fn(), getAccountBalance: vi.fn(), getCategoryGroups: vi.fn(),
   createCategoryGroup: vi.fn(), updateCategoryGroup: vi.fn(), deleteCategoryGroup: vi.fn(), getCategories: vi.fn(),
   createCategory: vi.fn(), updateCategory: vi.fn(), deleteCategory: vi.fn(), getBudgetMonths: vi.fn(),
-  getBudgetMonth: vi.fn(), getPayees: vi.fn(), getTransactions: vi.fn(), importTransactions: vi.fn(),
+  getBudgetMonth: vi.fn(), getPayees: vi.fn(), getTransactions: vi.fn(), aqlQuery: vi.fn(), importTransactions: vi.fn(),
   setBudgetAmount: vi.fn(), setBudgetCarryover: vi.fn(), holdBudgetForNextMonth: vi.fn(),
   resetBudgetHold: vi.fn(), batchBudgetUpdates: vi.fn(),
   createPayee: vi.fn(), updatePayee: vi.fn(), deletePayee: vi.fn(), mergePayees: vi.fn(),

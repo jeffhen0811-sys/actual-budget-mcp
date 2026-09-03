@@ -7,15 +7,15 @@ Define a protocol-safe MCP stdio surface with discoverable tools, validated inpu
 ## Requirements
 
 ### Requirement: MCP tool surface
-The server SHALL register exactly 42 tools at startup: all 34 v0.3.0 tools plus `actual_list_budget_months`, `actual_get_budget_month`, `actual_set_budget_amount`, `actual_set_budget_carryover`, `actual_hold_budget_for_next_month`, `actual_reset_budget_hold`, `actual_copy_budget_month`, and `actual_get_budget_summary`. The server MUST NOT register `actual_run_rules`, `actual_preview_rule`, a generic CRUD/query tool, a public ActualQL tool, or an alias for any named operation.
+The server SHALL register exactly 46 tools at startup: all 42 v0.4.0 tools plus `actual_get_transaction`, `actual_search_transactions`, `actual_bulk_update_transactions`, and `actual_preview_import`. The existing `actual_import_transactions` SHALL be enhanced additively rather than replaced or aliased. The server MUST NOT register raw search-by-field aliases, bulk field-specific aliases, `actual_run_query`, `actual_actualql`, `actual_raw_query`, a generic CRUD/query tool, or an alias for any named operation.
 
-#### Scenario: Client lists v0.4.0 tools
+#### Scenario: Client lists v0.5.0 tools
 - **WHEN** a compatible MCP client requests the tool list
-- **THEN** all 42 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
+- **THEN** all 46 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
 
 #### Scenario: No unsupported or artificial aliases
-- **WHEN** the v0.4.0 tool surface is inspected
-- **THEN** it contains no manual rule-run tool, rule-preview tool, reorder tool, generic CRUD/query tool, internal API tool, public ActualQL tool, or alias beyond the named set
+- **WHEN** the v0.5.0 tool surface is inspected
+- **THEN** it contains no public ActualQL, raw query, field-specific search, field-specific bulk, generic CRUD/query, internal API, or artificial inventory alias
 
 ### Requirement: Standard stdio transport
 The server SHALL communicate with clients through MCP stdio. Stdout MUST contain only protocol frames, while application and SDK diagnostics MUST be written to stderr.
@@ -58,15 +58,15 @@ The server SHALL provide all tool titles, tool descriptions, schema descriptions
 - **THEN** the stored value is returned verbatim without translation or reinterpretation
 
 ### Requirement: Tool behavioral annotations
-The three monthly budget read tools SHALL declare read-only, non-destructive, idempotent behavior. Category budget amount and carryover desired-state tools plus reset hold SHALL declare mutating, non-destructive, idempotent behavior. Hold-for-next-month SHALL declare mutating, non-destructive, non-idempotent behavior because its amount is incremental. Budget copy SHALL declare mutating behavior and a conservative destructive hint because confirmed overwrite can replace planning values, even though dry-run is the default; its execution SHALL be idempotent for unchanged source and target state. Existing v0.3.0 annotations SHALL remain compatible. Annotations MUST NOT replace validation, preflight, mode checks, or confirmation.
+`actual_get_transaction`, `actual_search_transactions`, and `actual_preview_import` SHALL declare read-only, non-destructive, idempotent behavior. `actual_bulk_update_transactions` SHALL declare mutation-capable, non-destructive, idempotent behavior because MCP annotations are static even though dry-run is the default. Its title, description, and schema SHALL make the default dry-run and explicit write confirmation clear. All 42 v0.4.0 annotations SHALL remain compatible, and annotations MUST NOT replace validation, preflight, protection, or confirmation.
 
-#### Scenario: Tool metadata inspection
-- **WHEN** a client inspects the 42-tool list
-- **THEN** read, write, idempotent, and destructive hints match each tool's documented behavior and retry semantics
+#### Scenario: Advanced tool metadata inspection
+- **WHEN** a client inspects the 46-tool list
+- **THEN** lookup, search, preview, bulk, and existing tool hints match their documented behavior and retry semantics
 
-#### Scenario: Dry-run copy metadata
-- **WHEN** a client inspects or invokes budget copy in dry-run mode
-- **THEN** the static tool annotation remains conservatively mutating/destructive while the result clearly reports that no write occurred
+#### Scenario: Bulk dry-run metadata
+- **WHEN** a client inspects or invokes bulk update in dry-run mode
+- **THEN** the static annotation remains conservatively mutation-capable while the result clearly reports that no write occurred
 
 ### Requirement: Consistent tool-level errors
 Operational failures SHALL be returned as MCP tool errors rather than malformed protocol responses or uncaught output. Errors SHALL preserve the existing public envelope with stable code, sanitized English message, operation name, and retryability, and MAY add safe `details`, `recoveryAction`, entity context, or state. Entity context SHALL support account, category group, category, transaction, payee, and rule identities. Stable domain codes SHALL cover not-found, name conflict, invalid reference, unsupported entity or rule shape, protected Actual entity, destructive confirmation, in-use relationships, preflight failure, mutation failure, synchronization failure, and post-mutation verification failure as applicable. Raw SDK messages MUST NOT become the public contract.
@@ -137,6 +137,21 @@ All 34 v0.3.0 tools MUST retain their names, required inputs, strictness, behavi
 #### Scenario: Existing payee and rule consumers
 - **WHEN** clients use the v0.3.0 payee or rule tools
 - **THEN** their established list, detail, authoring, mutation, and error contracts remain unchanged
+
+### Requirement: Preserve v0.4.0 public contracts
+All 42 v0.4.0 tools MUST retain their names, previously required inputs, strictness, behavioral annotations, wrapper shapes, and compatible required output fields. Additive optional transaction fields, import options, and import metadata MUST NOT invalidate a previously valid v0.4.0 request or remove the established `actual_get_transactions.transactions` and `actual_import_transactions` `added`, `updated`, and `errors` fields.
+
+#### Scenario: Existing v0.4.0 transaction reader
+- **WHEN** a v0.4.0 client invokes `actual_get_transactions` and consumes its established wrapper and fields
+- **THEN** the invocation remains valid and the required prior fields retain their names and meanings in v0.5.0
+
+#### Scenario: Existing v0.4.0 importer
+- **WHEN** a v0.4.0 client invokes `actual_import_transactions` without new options
+- **THEN** the request remains valid and the response still contains compatible `added`, `updated`, and `errors` fields
+
+#### Scenario: Existing non-transaction tool
+- **WHEN** a client invokes any other v0.4.0 tool with a previously valid request
+- **THEN** its request, result, annotation, and error contracts remain compatible in v0.5.0
 
 ### Requirement: Budget operation errors remain structured
 Budget validation, unsupported-mode, incompatible-category, unavailable-month, overwrite-confirmation, result-size, partial-copy, synchronization, and verification failures SHALL use stable sanitized tool errors. Safe details MAY include month identifiers, category IDs, copy counts, and recovery instructions but MUST NOT include credentials or raw SDK internals.

@@ -1,7 +1,7 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLogger } from '../src/logger.js';
-import { createMcpServer, TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
+import { createMcpServer, TOOL_NAMES, V040_TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
 import { PublicError } from '../src/errors.js';
 
 const budgetCategoryFixture = {
@@ -26,6 +26,25 @@ function fakeRuntime(): ToolRuntime {
     listCategories: vi.fn().mockResolvedValue([{ groupId: 'g1', groupName: 'Moradia', categories: [{ id: 'c1', name: 'Aluguel', hidden: false }] }]),
     listPayees: vi.fn().mockResolvedValue([{ id: 'p1', name: 'Padaria São João' }]),
     getTransactions: vi.fn().mockResolvedValue([{ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500, notes: 'Café da manhã' }]),
+    getTransaction: vi.fn().mockResolvedValue({ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500 }),
+    searchTransactions: vi.fn().mockResolvedValue({
+      transactions: [{ id: 't1', account: 'a1', date: '2026-08-01', amount: -1500 }],
+      page: { limit: 100, offset: 0, returned: 1 }, splitMode: 'inline'
+    }),
+    previewImport: vi.fn().mockResolvedValue({
+      requestFingerprint: `v1:${'a'.repeat(64)}`, wouldAddCount: 1, wouldUpdateCount: 0, ignoredCount: 0,
+      errorCount: 0, previewOnlyIds: ['preview-t1'], existingTransactionIds: [], errors: [], evidence: []
+    }),
+    bulkUpdateTransactions: vi.fn().mockResolvedValue({
+      dryRun: true, executed: false, synchronized: false, verified: false, executable: true,
+      counts: { requested: 1, matched: 1, wouldUpdate: 1, unchanged: 0, blocked: 0 },
+      items: [{
+        transactionId: 't1', status: 'would_update', changedFields: ['notes'],
+        before: { id: 't1', account: 'a1', date: '2026-08-01', amount: -1500, notes: null },
+        after: { id: 't1', account: 'a1', date: '2026-08-01', amount: -1500, notes: 'reviewed' }
+      }],
+      updatedIds: [], unchangedIds: [], affectedIds: []
+    }),
     importTransactions: vi.fn().mockResolvedValue({ added: ['t1'], updated: [], errors: [] }),
     updateTransaction: vi.fn().mockResolvedValue({ success: true, transactionId: 't1' }),
     deleteTransaction: vi.fn().mockResolvedValue({ success: true, transactionId: 't1' }),
@@ -105,11 +124,12 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly forty-two tools while preserving the original thirty-four with accurate annotations', async () => {
+  it('registers exactly forty-six tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(42);
-    expect(TOOL_NAMES.slice(0, 34)).toHaveLength(34);
+    expect(tools).toHaveLength(46);
+    expect(V040_TOOL_NAMES).toHaveLength(42);
+    expect(V040_TOOL_NAMES.every(name => tools.some(tool => tool.name === name))).toBe(true);
     for (const tool of tools) {
       expect(tool.title).toMatch(/^[\x20-\x7E]+$/);
       expect(tool.description).toMatch(/^[\x20-\x7E]+$/);
@@ -140,8 +160,17 @@ describe('MCP server contract', () => {
     expect(tools.find(tool => tool.name === 'actual_copy_budget_month')?.annotations).toMatchObject({
       readOnlyHint: false, destructiveHint: true, idempotentHint: true
     });
+    for (const name of ['actual_get_transaction', 'actual_search_transactions', 'actual_preview_import']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({
+        readOnlyHint: true, destructiveHint: false, idempotentHint: true
+      });
+    }
+    expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.annotations).toMatchObject({
+      readOnlyHint: false, destructiveHint: false, idempotentHint: true
+    });
+    expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.description).toContain('dry-run mode by default');
     expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
-    expect(tools.some(tool => /reorder|account_group|actualql|generic_crud/i.test(tool.name))).toBe(false);
+    expect(tools.some(tool => /reorder|account_group|actualql|raw_query|run_query|generic_crud|search_by_|bulk_update_(?:category|payee|notes|cleared)/i.test(tool.name))).toBe(false);
   });
 
   it('returns matching JSON text and structured content while preserving user data verbatim', async () => {
@@ -160,6 +189,10 @@ describe('MCP server contract', () => {
       { name: 'actual_list_categories', arguments: {} },
       { name: 'actual_list_payees', arguments: {} },
       { name: 'actual_get_transactions', arguments: { accountId: 'a1', startDate: '2026-08-01', endDate: '2026-08-31' } },
+      { name: 'actual_get_transaction', arguments: { transactionId: 't1' } },
+      { name: 'actual_search_transactions', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } },
+      { name: 'actual_preview_import', arguments: { accountId: 'a1', transactions: [{ date: '2026-08-29', amount: -1299, imported_id: 'provider:preview' }] } },
+      { name: 'actual_bulk_update_transactions', arguments: { items: [{ transactionId: 't1', fields: { notes: 'reviewed' } }] } },
       { name: 'actual_import_transactions', arguments: { accountId: 'a1', transactions: [{ date: '2026-08-29', amount: -1299, imported_id: 'provider:1' }] } },
       { name: 'actual_update_transaction', arguments: { transactionId: 't1', fields: { notes: 'Explicit note' } } },
       { name: 'actual_delete_transaction', arguments: { transactionId: 't1', confirmDestructive: true } },
