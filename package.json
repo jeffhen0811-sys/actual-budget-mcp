@@ -28,6 +28,7 @@
     "test:e2e:read": "npm run build && vitest run --config vitest.e2e.config.ts test/e2e/read.e2e.test.ts",
     "test:e2e:write": "npm run build && vitest run --config vitest.e2e.config.ts test/e2e/write.e2e.test.ts",
     "test:all": "npm run typecheck && npm test && npm run test:contract && npm run test:integration && npm run test:e2e && npm run build",
+    "contract:baseline:generate": "tsx scripts/generate-v070-contract-baseline.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
