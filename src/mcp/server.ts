@@ -2,6 +2,11 @@ import { McpServer, type StandardSchemaWithJSON } from '@modelcontextprotocol/se
 import type { ActualClient } from '../actual/client.js';
 import type { AdapterTransaction, ImportTransaction } from '../actual/adapter.js';
 import type { WritableRuleDraft } from '../actual/rules.js';
+import type { ScheduleDraft, ScheduleUpdate } from '../actual/schedules.js';
+import type { SummaryScope } from '../actual/summaries.js';
+import type { OperationalConfig } from '../config.js';
+import { loadOperationalConfig } from '../config.js';
+import { MCP_VERSION } from '../version.js';
 import type { Logger } from '../logger.js';
 import {
   accountIdInputSchema,
@@ -34,6 +39,7 @@ import {
   createRuleInputSchema,
   createTransferInputSchema,
   createTransferOutputSchema,
+  createScheduleInputSchema,
   copyBudgetInputSchema,
   deleteAccountInputSchema,
   deleteCategoryGroupInputSchema,
@@ -41,6 +47,7 @@ import {
   deletePayeeInputSchema,
   deleteRuleInputSchema,
   deleteTransactionInputSchema,
+  deleteScheduleInputSchema,
   emptyInputSchema,
   findPossibleDuplicatesInputSchema,
   findPossibleDuplicatesOutputSchema,
@@ -49,7 +56,10 @@ import {
   getTransactionsInputSchema,
   getTransferInputSchema,
   getTransferOutputSchema,
+  getScheduleInputSchema,
+  getScheduleOutputSchema,
   healthOutputSchema,
+  incomeSummaryOutputSchema,
   importTransactionsInputSchema,
   importTransactionsOutputSchema,
   getTransactionInputSchema,
@@ -64,7 +74,11 @@ import {
   bulkUpdateTransactionsOutputSchema,
   holdBudgetInputSchema,
   listBudgetMonthsOutputSchema,
+  listSchedulesInputSchema,
+  listSchedulesOutputSchema,
   mergePayeesInputSchema,
+  monthSummaryInputSchema,
+  monthSummaryOutputSchema,
   moveCategoryInputSchema,
   payeesOutputSchema,
   payeeDeletionOutputSchema,
@@ -77,6 +91,11 @@ import {
   ruleMutationOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
+  rangeSummaryInputSchema,
+  runtimeStatusOutputSchema,
+  scheduleDeletionOutputSchema,
+  scheduleMutationOutputSchema,
+  spendingSummaryOutputSchema,
   syncOutputSchema,
   setBudgetAmountInputSchema,
   setBudgetCarryoverInputSchema,
@@ -88,10 +107,12 @@ import {
   updateCategoryInputSchema,
   updatePayeeInputSchema,
   updateRuleInputSchema,
+  updateScheduleInputSchema,
   updateTransactionInputSchema
 } from './contracts.js';
 import { PublicError } from '../errors.js';
 import { successResult, toolError } from './response.js';
+import { annotationsFor, enforceToolPolicy, TOOL_CAPABILITIES, TOOL_NAMES as REGISTERED_TOOL_NAMES } from './tool-registry.js';
 
 export interface ToolRuntime {
   health: ActualClient['health'];
@@ -147,6 +168,16 @@ export interface ToolRuntime {
   holdBudgetForNextMonth: ActualClient['holdBudgetForNextMonth'];
   resetBudgetHold: ActualClient['resetBudgetHold'];
   copyBudgetMonth: ActualClient['copyBudgetMonth'];
+  listSchedules: ActualClient['listSchedules'];
+  getSchedule: ActualClient['getSchedule'];
+  createSchedule: ActualClient['createSchedule'];
+  updateSchedule: ActualClient['updateSchedule'];
+  deleteSchedule: ActualClient['deleteSchedule'];
+  getMonthSummary: ActualClient['getMonthSummary'];
+  getSpendingSummary: ActualClient['getSpendingSummary'];
+  getIncomeSummary: ActualClient['getIncomeSummary'];
+  runtimeStatus: ActualClient['runtimeStatus'];
+  getOperationalPolicy?: ActualClient['getOperationalPolicy'];
 }
 
 export const V040_TOOL_NAMES = [
@@ -194,20 +225,7 @@ export const V040_TOOL_NAMES = [
   'actual_copy_budget_month'
 ] as const;
 
-export const TOOL_NAMES = [
-  ...V040_TOOL_NAMES,
-  'actual_get_transaction',
-  'actual_search_transactions',
-  'actual_bulk_update_transactions',
-  'actual_preview_import',
-  'actual_list_transfer_payees',
-  'actual_get_transfer',
-  'actual_search_transfers',
-  'actual_create_transfer',
-  'actual_find_possible_transfers',
-  'actual_find_possible_duplicates',
-  'actual_get_account_reconciliation'
-] as const;
+export const TOOL_NAMES = REGISTERED_TOOL_NAMES;
 
 function acceptUnconfirmedForStructuredError<T extends StandardSchemaWithJSON>(schema: T): T {
   const standard = schema['~standard'];
@@ -235,14 +253,27 @@ const deleteCategoryToolInputSchema = acceptUnconfirmedForStructuredError(delete
 const deletePayeeToolInputSchema = acceptUnconfirmedForStructuredError(deletePayeeInputSchema);
 const mergePayeesToolInputSchema = acceptUnconfirmedForStructuredError(mergePayeesInputSchema);
 const deleteRuleToolInputSchema = acceptUnconfirmedForStructuredError(deleteRuleInputSchema);
+const deleteScheduleToolInputSchema = acceptUnconfirmedForStructuredError(deleteScheduleInputSchema);
 
-export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer {
+export function createMcpServer(runtime: ToolRuntime, logger: Logger, configuredPolicy?: OperationalConfig): McpServer {
+  const policy = configuredPolicy ?? runtime.getOperationalPolicy?.() ?? loadOperationalConfig();
   const server = new McpServer(
-    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: '0.6.0' },
+    { name: 'actual-budget-mcp', title: 'Actual Budget MCP', version: MCP_VERSION },
     { instructions: 'Amounts are signed integer minor units. Transaction bulk update and budget copy default to dry runs. Use write confirmations only after explicit authorization.' }
   );
 
-  server.registerTool(
+  const originalRegisterTool = server.registerTool.bind(server) as typeof server.registerTool;
+  const registerTool = ((name: string, config: Record<string, unknown>, handler: (...args: unknown[]) => unknown) => {
+    const definition = TOOL_CAPABILITIES.get(name);
+    if (!definition) throw new Error(`Tool ${name} is missing from the capability registry.`);
+    return (originalRegisterTool as (...args: unknown[]) => unknown)(name, { ...config, annotations: annotationsFor(definition) }, async (...args: unknown[]) => {
+      try { enforceToolPolicy(definition, policy); }
+      catch (error) { return toolError(error, name, logger); }
+      return handler(...args);
+    });
+  }) as typeof server.registerTool;
+
+  registerTool(
     'actual_health',
     {
       title: 'Check Actual health',
@@ -256,7 +287,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_sync',
     {
       title: 'Synchronize Actual budget',
@@ -270,7 +301,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_budget_months',
     {
       title: 'List available budget months',
@@ -285,7 +316,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_budget_month',
     {
       title: 'Get monthly budget',
@@ -300,7 +331,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_budget_summary',
     {
       title: 'Summarize monthly budget',
@@ -319,7 +350,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_set_budget_amount',
     {
       title: 'Set category budget amount',
@@ -334,7 +365,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_set_budget_carryover',
     {
       title: 'Set expense budget carryover',
@@ -349,7 +380,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_hold_budget_for_next_month',
     {
       title: 'Hold budget funds for next month',
@@ -364,7 +395,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_reset_budget_hold',
     {
       title: 'Reset manual budget hold',
@@ -379,7 +410,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_copy_budget_month',
     {
       title: 'Preview or copy monthly planning',
@@ -394,7 +425,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_accounts',
     {
       title: 'List Actual accounts',
@@ -408,7 +439,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_account',
     {
       title: 'Get Actual account',
@@ -422,7 +453,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_categories',
     {
       title: 'List Actual categories',
@@ -436,7 +467,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_payees',
     {
       title: 'List Actual payees',
@@ -450,7 +481,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_transactions',
     {
       title: 'Get Actual transactions',
@@ -464,7 +495,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_transaction',
     {
       title: 'Get exact Actual transaction',
@@ -479,7 +510,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_search_transactions',
     {
       title: 'Search Actual transactions',
@@ -494,7 +525,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_preview_import',
     {
       title: 'Preview Actual transaction import',
@@ -517,7 +548,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_bulk_update_transactions',
     {
       title: 'Bulk update Actual transactions safely',
@@ -539,7 +570,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_import_transactions',
     {
       title: 'Import Actual transactions',
@@ -563,7 +594,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_transaction',
     {
       title: 'Update Actual transaction',
@@ -577,7 +608,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_transaction',
     {
       title: 'Delete Actual transaction',
@@ -591,7 +622,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_transfer_payees',
     {
       title: 'List Actual transfer payees',
@@ -606,7 +637,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_transfer',
     {
       title: 'Get exact Actual transfer',
@@ -621,7 +652,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_search_transfers',
     {
       title: 'Search Actual transfers',
@@ -636,7 +667,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_transfer',
     {
       title: 'Preview or create an Actual transfer',
@@ -651,7 +682,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_find_possible_transfers',
     {
       title: 'Find possible unlinked Actual transfers',
@@ -666,7 +697,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_find_possible_duplicates',
     {
       title: 'Find possible duplicate Actual transactions',
@@ -681,7 +712,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_account_reconciliation',
     {
       title: 'Get Actual account reconciliation diagnostics',
@@ -696,7 +727,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_account',
     {
       title: 'Create Actual account',
@@ -711,7 +742,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_account',
     {
       title: 'Update Actual account',
@@ -726,7 +757,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_close_account',
     {
       title: 'Safely close Actual account',
@@ -741,7 +772,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_reopen_account',
     {
       title: 'Reopen Actual account',
@@ -756,7 +787,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_account',
     {
       title: 'Delete empty Actual account',
@@ -778,7 +809,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_category_group',
     {
       title: 'Create Actual category group',
@@ -793,7 +824,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_category_group',
     {
       title: 'Rename Actual category group',
@@ -808,7 +839,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_category_group',
     {
       title: 'Delete empty Actual category group',
@@ -830,7 +861,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_category',
     {
       title: 'Create Actual category',
@@ -845,7 +876,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_category',
     {
       title: 'Rename Actual category',
@@ -860,7 +891,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_move_category',
     {
       title: 'Move Actual category',
@@ -875,7 +906,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_hide_category',
     {
       title: 'Hide Actual category',
@@ -890,7 +921,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_unhide_category',
     {
       title: 'Unhide Actual category',
@@ -905,7 +936,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_category',
     {
       title: 'Delete unused Actual category',
@@ -927,7 +958,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_payee',
     {
       title: 'Get Actual payee',
@@ -942,7 +973,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_payee',
     {
       title: 'Create Actual payee',
@@ -957,7 +988,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_payee',
     {
       title: 'Rename Actual payee',
@@ -972,7 +1003,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_payee',
     {
       title: 'Delete unused Actual payee',
@@ -987,7 +1018,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_merge_payees',
     {
       title: 'Merge Actual payees',
@@ -1002,7 +1033,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_list_rules',
     {
       title: 'List Actual rules',
@@ -1017,7 +1048,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_get_rule',
     {
       title: 'Get Actual rule',
@@ -1032,7 +1063,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_create_rule',
     {
       title: 'Create Actual rule',
@@ -1047,7 +1078,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_update_rule',
     {
       title: 'Update Actual rule',
@@ -1062,7 +1093,7 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     }
   );
 
-  server.registerTool(
+  registerTool(
     'actual_delete_rule',
     {
       title: 'Delete Actual rule',
@@ -1074,6 +1105,141 @@ export function createMcpServer(runtime: ToolRuntime, logger: Logger): McpServer
     async ({ ruleId, confirmDestructive }) => {
       try { return successResult(await runtime.deleteRule(ruleId, confirmDestructive)); }
       catch (error) { return toolError(error, 'actual_delete_rule', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_list_schedules',
+    {
+      title: 'List Actual schedules',
+      description: 'List stable schedule projections with bounded pagination and optional account/completion filters.',
+      inputSchema: listSchedulesInputSchema,
+      outputSchema: listSchedulesOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.listSchedules(input as Parameters<ToolRuntime['listSchedules']>[0])); }
+      catch (error) { return toolError(error, 'actual_list_schedules', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_get_schedule',
+    {
+      title: 'Get Actual schedule',
+      description: 'Get one exact stable schedule projection through the complete public schedule list.',
+      inputSchema: getScheduleInputSchema,
+      outputSchema: getScheduleOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ scheduleId }) => {
+      try { return successResult(await runtime.getSchedule(scheduleId)); }
+      catch (error) { return toolError(error, 'actual_get_schedule', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_create_schedule',
+    {
+      title: 'Create Actual schedule',
+      description: 'Create and verify a supported one-time or recurring schedule with explicit amount semantics.',
+      inputSchema: createScheduleInputSchema,
+      outputSchema: scheduleMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false }
+    },
+    async input => {
+      try { return successResult(await runtime.createSchedule(input as ScheduleDraft)); }
+      catch (error) { return toolError(error, 'actual_create_schedule', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_update_schedule',
+    {
+      title: 'Update Actual schedule',
+      description: 'Apply a non-empty allowlisted desired-state update and verify the persisted schedule.',
+      inputSchema: updateScheduleInputSchema,
+      outputSchema: scheduleMutationOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ scheduleId, ...fields }) => {
+      try { return successResult(await runtime.updateSchedule(scheduleId, fields as ScheduleUpdate)); }
+      catch (error) { return toolError(error, 'actual_update_schedule', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_delete_schedule',
+    {
+      title: 'Delete Actual schedule',
+      description: 'DESTRUCTIVE OPERATION: Delete one schedule after confirmation while verifying historical transactions remain.',
+      inputSchema: deleteScheduleToolInputSchema,
+      outputSchema: scheduleDeletionOutputSchema,
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+    },
+    async ({ scheduleId, confirmDestructive }) => {
+      try { return successResult(await runtime.deleteSchedule(scheduleId, confirmDestructive)); }
+      catch (error) { return toolError(error, 'actual_delete_schedule', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_get_month_summary',
+    {
+      title: 'Get monthly financial summary',
+      description: 'Return signed ledger totals and a separately sourced official budget month when the scope is compatible.',
+      inputSchema: monthSummaryInputSchema,
+      outputSchema: monthSummaryOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async ({ month, ...scope }) => {
+      try { return successResult(await runtime.getMonthSummary(month, scope as Omit<SummaryScope, 'startDate' | 'endDate'>)); }
+      catch (error) { return toolError(error, 'actual_get_month_summary', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_get_spending_summary',
+    {
+      title: 'Get spending summary',
+      description: 'Return signed expense totals, deterministic category/group breakdowns, and bounded top payees.',
+      inputSchema: rangeSummaryInputSchema,
+      outputSchema: spendingSummaryOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.getSpendingSummary(input as SummaryScope)); }
+      catch (error) { return toolError(error, 'actual_get_spending_summary', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_get_income_summary',
+    {
+      title: 'Get income summary',
+      description: 'Return signed income totals, deterministic category breakdowns, and bounded top payees.',
+      inputSchema: rangeSummaryInputSchema,
+      outputSchema: incomeSummaryOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async input => {
+      try { return successResult(await runtime.getIncomeSummary(input as SummaryScope)); }
+      catch (error) { return toolError(error, 'actual_get_income_summary', logger); }
+    }
+  );
+
+  registerTool(
+    'actual_get_runtime_status',
+    {
+      title: 'Get MCP runtime status',
+      description: 'Return sanitized process-lifetime connectivity, policy, cache, queue, version, and observed-sync status.',
+      inputSchema: emptyInputSchema,
+      outputSchema: runtimeStatusOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true }
+    },
+    async () => {
+      try { return successResult(await runtime.runtimeStatus()); }
+      catch (error) { return toolError(error, 'actual_get_runtime_status', logger); }
     }
   );
 

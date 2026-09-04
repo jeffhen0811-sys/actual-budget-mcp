@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.7.0 - 2026-09-03
+
+### Added
+
+- Five schedule tools for bounded reads and verified create/update/delete through the pinned public SDK.
+- Three signed, bounded financial summaries and one sanitized runtime-status tool.
+- Central capability policy, MCP read-only mode, destructive-operation kill switch, safe queue observations, and in-memory sync telemetry.
+
+### Changed
+
+- Expanded discovery from 53 to exactly 62 tools while preserving the previous public names and required result fields.
+- Centralized MCP/SDK versions and kept `@actual-app/api` pinned exactly at 26.8.1.
+- Extended installed-contract, unit, integration/E2E ownership, environment, acceptance, and readiness documentation.
+
+### Fixed
+
+- Prevented mutation tools from bypassing process policy, unsafe schedule reference/shape changes, omitted schedule amounts, and rule-internal leakage.
+- Prevented transfers, starting balances, split parents, refunds, income adjustments, and off-budget cash flow from being misclassified in summaries.
+
 ## 0.6.0 - 2026-09-03
 
 ### Added

@@ -6,6 +6,8 @@ import {
   budgetResultLimitSchema,
   boundedTextSchema,
   DEFAULT_BUDGET_CATEGORY_RESULTS,
+  DEFAULT_SCHEDULE_RESULTS,
+  DEFAULT_TOP_PAYEE_RESULTS,
   DEFAULT_TRANSACTION_SEARCH_RESULTS,
   entityNameSchema,
   integerAmountSchema,
@@ -14,6 +16,9 @@ import {
   MAX_BULK_TRANSACTION_UPDATES,
   MAX_TRANSACTION_SEARCH_OFFSET,
   MAX_TRANSACTION_SEARCH_RESULTS,
+  MAX_SCHEDULE_OFFSET,
+  MAX_SCHEDULE_RESULTS,
+  MAX_TOP_PAYEE_RESULTS,
   opaqueIdSchema,
   positiveIntegerAmountSchema
 } from '../schemas.js';
@@ -29,7 +34,7 @@ export const errorOutputSchema = z.object({
     details: z.record(z.string(), z.unknown()).optional().describe('Safe relationship or refusal details.'),
     recoveryAction: z.string().optional().describe('Safe next operation for partial-state recovery.'),
     entity: z.object({
-      type: z.enum(['account', 'categoryGroup', 'category', 'transaction', 'payee', 'rule', 'budgetMonth']),
+      type: z.enum(['account', 'categoryGroup', 'category', 'transaction', 'payee', 'rule', 'schedule', 'budgetMonth']),
       id: opaqueIdSchema.optional(),
       name: z.string().optional()
     }).strict().optional(),
@@ -79,13 +84,147 @@ export const healthOutputSchema = z.object({
   server: z.string(),
   budgetLoaded: z.boolean(),
   version: z.string().optional(),
-  diagnosticCode: z.string().optional()
+  diagnosticCode: z.string().optional(),
+  mcpVersion: z.string().optional(),
+  sdkVersion: z.string().optional(),
+  readOnlyMode: z.boolean().optional()
 }).strict().describe('Sanitized Actual connectivity and local budget status.');
 
 export const syncOutputSchema = z.object({
   success: z.literal(true),
-  synchronizedAt: z.iso.datetime()
+  synchronizedAt: z.iso.datetime(),
+  completedAt: z.iso.datetime().optional(),
+  durationMs: z.number().nonnegative().optional()
 }).strict().describe('Successful synchronization result and completion timestamp.');
+
+const schedulePatternSchema = z.object({
+  type: z.enum(['day', 'SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA']),
+  value: z.number().int().safe()
+}).strict();
+
+export const scheduleDateSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('oneTime'), date: isoDateSchema }).strict(),
+  z.object({
+    type: z.literal('recurring'),
+    frequency: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
+    start: isoDateSchema,
+    interval: z.number().int().safe().positive(),
+    patterns: z.array(schedulePatternSchema).min(1).optional(),
+    weekend: z.enum(['none', 'before', 'after']).default('none'),
+    end: z.discriminatedUnion('type', [
+      z.object({ type: z.literal('never') }).strict(),
+      z.object({ type: z.literal('afterOccurrences'), occurrences: z.number().int().safe().positive() }).strict(),
+      z.object({ type: z.literal('onDate'), date: isoDateSchema }).strict()
+    ]).default({ type: 'never' })
+  }).strict().superRefine((value, context) => {
+    if (value.frequency === 'monthly' && !value.patterns?.length) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Monthly schedules require patterns.' });
+    if (value.frequency !== 'monthly' && value.patterns !== undefined) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Patterns are supported only for monthly schedules.' });
+    for (const [index, pattern] of (value.patterns ?? []).entries()) {
+      const valid = pattern.type === 'day' ? pattern.value >= 1 && pattern.value <= 31 : pattern.value >= -5 && pattern.value <= 5 && pattern.value !== 0;
+      if (!valid) context.addIssue({ code: 'custom', path: ['patterns', index, 'value'], message: 'Unsupported monthly pattern value.' });
+    }
+    if (value.end.type === 'onDate' && value.end.date < value.start) context.addIssue({ code: 'custom', path: ['end', 'date'], message: 'End date must be on or after start.' });
+  })
+]);
+
+export const scheduleAmountSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('exact'), amount: integerAmountSchema }).strict(),
+  z.object({ type: z.literal('approximate'), amount: integerAmountSchema }).strict(),
+  z.object({ type: z.literal('between'), minAmount: integerAmountSchema, maxAmount: integerAmountSchema }).strict()
+    .refine(value => value.minAmount <= value.maxAmount, { path: ['maxAmount'], message: 'maxAmount must be at least minAmount.' })
+]);
+
+export const scheduleSchema = z.object({
+  id: opaqueIdSchema, name: z.string().optional(), accountId: opaqueIdSchema.nullable(), payeeId: opaqueIdSchema.nullable(),
+  amount: scheduleAmountSchema.nullable(), date: scheduleDateSchema.nullable(), nextDate: isoDateSchema.optional(), completed: z.boolean(),
+  postsTransaction: z.boolean(), writable: z.boolean(), unsupportedReasons: z.array(z.string())
+}).strict().describe('Stable schedule projection without protected rule internals.');
+
+export const listSchedulesInputSchema = z.object({
+  accountId: opaqueIdSchema.optional(), completed: z.boolean().optional(),
+  limit: z.number().int().min(1).max(MAX_SCHEDULE_RESULTS).default(DEFAULT_SCHEDULE_RESULTS),
+  offset: z.number().int().min(0).max(MAX_SCHEDULE_OFFSET).default(0)
+}).strict().describe('Bounded schedule list filters and pagination.');
+export const listSchedulesOutputSchema = z.object({
+  schedules: z.array(scheduleSchema),
+  scope: z.object({ accountId: opaqueIdSchema.optional(), completed: z.boolean().optional() }).strict(),
+  page: z.object({ limit: z.number().int(), offset: z.number().int(), returned: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).strict()
+}).strict().describe('Filtered and bounded schedule list.');
+export const getScheduleInputSchema = z.object({ scheduleId: opaqueIdSchema }).strict().describe('Exact schedule identifier.');
+export const getScheduleOutputSchema = z.object({ schedule: scheduleSchema }).strict().describe('Exact projected schedule.');
+
+const scheduleDraftShape = {
+  name: entityNameSchema.optional(), accountId: opaqueIdSchema, payeeId: opaqueIdSchema.nullable().optional(),
+  amount: scheduleAmountSchema, date: scheduleDateSchema, postsTransaction: z.boolean()
+};
+export const createScheduleInputSchema = z.object(scheduleDraftShape).strict().describe('Supported schedule creation fields.');
+export const updateScheduleInputSchema = z.object({
+  scheduleId: opaqueIdSchema, name: entityNameSchema.optional(), accountId: opaqueIdSchema.optional(), payeeId: opaqueIdSchema.nullable().optional(),
+  amount: scheduleAmountSchema.optional(), date: scheduleDateSchema.optional(), postsTransaction: z.boolean().optional()
+}).strict().refine(value => Object.keys(value).some(key => key !== 'scheduleId'), 'At least one editable field is required.').describe('Non-empty supported schedule update.');
+export const deleteScheduleInputSchema = z.object({ scheduleId: opaqueIdSchema, confirmDestructive: z.literal(true) }).strict().describe('Confirmed schedule deletion.');
+export const scheduleMutationOutputSchema = z.object({
+  success: z.literal(true), changed: z.boolean(), changedFields: z.array(z.string()).optional(), schedule: scheduleSchema
+}).strict().describe('Verified schedule mutation result.');
+export const scheduleDeletionOutputSchema = z.object({
+  success: z.literal(true), deletedScheduleId: opaqueIdSchema, deletedScheduleName: z.string().nullable(), linkedTransactionIds: z.array(opaqueIdSchema), historicalTransactionsPreserved: z.literal(true)
+}).strict().describe('Verified schedule deletion and historical-transaction preservation.');
+
+const uniqueSummaryIds = z.array(opaqueIdSchema).min(1).max(250).refine(values => new Set(values).size === values.length, 'Identifiers must be unique.');
+const summaryScopeShape = {
+  accountIds: uniqueSummaryIds.optional(), categoryIds: uniqueSummaryIds.optional(), categoryGroupIds: uniqueSummaryIds.optional(),
+  includeOffbudget: z.boolean().default(false), topPayeeLimit: z.number().int().min(1).max(MAX_TOP_PAYEE_RESULTS).default(DEFAULT_TOP_PAYEE_RESULTS)
+};
+export const monthSummaryInputSchema = z.object({ month: budgetMonthSchema, ...summaryScopeShape }).strict().describe('Month and bounded optional financial scope.');
+export const rangeSummaryInputSchema = z.object({ startDate: isoDateSchema, endDate: isoDateSchema, ...summaryScopeShape }).strict()
+  .superRefine((value, context) => {
+    const start = Date.parse(`${value.startDate}T00:00:00Z`), end = Date.parse(`${value.endDate}T00:00:00Z`);
+    if (start > end || Math.floor((end - start) / 86_400_000) + 1 > MAX_DATE_RANGE_DAYS) context.addIssue({ code: 'custom', path: ['endDate'], message: `Range must be ordered and no more than ${MAX_DATE_RANGE_DAYS} inclusive days.` });
+  }).describe('Bounded inclusive financial summary range.');
+
+const summaryScopeOutputSchema = z.object({ startDate: isoDateSchema, endDate: isoDateSchema, accountIds: z.array(opaqueIdSchema), includeOffbudget: z.boolean() }).strict();
+const breakdownSchema = z.object({ id: z.string(), name: z.string().nullable(), amount: integerAmountSchema, transactionCount: z.number().int().nonnegative() }).strict();
+const offbudgetSchema = z.object({ inflowAmount: integerAmountSchema, outflowAmount: integerAmountSchema, netChange: integerAmountSchema, transactionCount: z.number().int().nonnegative() }).strict();
+const exclusionsSchema = z.object({ transfers: z.literal(true), startingBalances: z.literal(true), splitParents: z.literal(true) }).strict();
+export const ledgerSummarySchema = z.object({
+  source: z.literal('fixed-actualql-ledger'), scope: summaryScopeOutputSchema,
+  incomeAmount: integerAmountSchema, expenseAmount: integerAmountSchema, netAmount: integerAmountSchema,
+  transactionCount: z.number().int().nonnegative(), incomeTransactionCount: z.number().int().nonnegative(), expenseTransactionCount: z.number().int().nonnegative(),
+  categorizedCount: z.number().int().nonnegative(), uncategorizedCount: z.number().int().nonnegative(),
+  uncategorizedIncomeAmount: integerAmountSchema, uncategorizedExpenseAmount: integerAmountSchema,
+  incomeCategoryBreakdown: z.array(breakdownSchema), expenseCategoryBreakdown: z.array(breakdownSchema), expenseGroupBreakdown: z.array(breakdownSchema),
+  topIncomePayees: z.array(breakdownSchema), topExpensePayees: z.array(breakdownSchema), topPayeeLimit: z.number().int(),
+  offbudgetCashFlow: offbudgetSchema.optional(), exclusions: exclusionsSchema
+}).strict();
+export const monthSummaryOutputSchema = z.object({
+  month: budgetMonthSchema, ledger: ledgerSummarySchema,
+  budget: z.discriminatedUnion('available', [
+    z.object({ available: z.literal(true), source: z.literal('official-getBudgetMonth'), data: z.lazy(() => budgetMonthOutputSchema) }).strict(),
+    z.object({ available: z.literal(false), reason: z.string() }).strict()
+  ])
+}).strict().describe('Ledger month summary with a separately sourced official budget section when compatible.');
+export const spendingSummaryOutputSchema = z.object({
+  source: z.literal('fixed-actualql-ledger'), scope: summaryScopeOutputSchema, netExpenseAmount: integerAmountSchema,
+  transactionCount: z.number().int().nonnegative(), uncategorizedExpenseAmount: integerAmountSchema,
+  categoryBreakdown: z.array(breakdownSchema), groupBreakdown: z.array(breakdownSchema), topPayees: z.array(breakdownSchema), topPayeeLimit: z.number().int(),
+  offbudgetCashFlow: offbudgetSchema.optional(), exclusions: exclusionsSchema
+}).strict().describe('Signed spending summary with deterministic bounded breakdowns.');
+export const incomeSummaryOutputSchema = z.object({
+  source: z.literal('fixed-actualql-ledger'), scope: summaryScopeOutputSchema, netIncomeAmount: integerAmountSchema,
+  transactionCount: z.number().int().nonnegative(), uncategorizedIncomeAmount: integerAmountSchema,
+  categoryBreakdown: z.array(breakdownSchema), topPayees: z.array(breakdownSchema), topPayeeLimit: z.number().int(),
+  offbudgetCashFlow: offbudgetSchema.optional(), exclusions: exclusionsSchema
+}).strict().describe('Signed income summary with deterministic bounded breakdowns.');
+
+export const runtimeStatusOutputSchema = z.object({
+  mcpVersion: z.string(), sdkVersion: z.string(), connected: z.boolean(), budgetLoaded: z.boolean(), server: z.string(), uptimeMs: z.number().nonnegative(),
+  modes: z.object({ readOnly: z.boolean(), allowDestructive: z.boolean(), effectiveWriteAllowed: z.boolean() }).strict(),
+  cache: z.object({ configured: z.boolean(), locked: z.boolean() }).strict(),
+  queue: z.object({ queuedCount: z.number().int().nonnegative(), activeOperation: z.string().optional() }).strict(),
+  syncTelemetry: z.object({ lastSyncAttemptAt: z.iso.datetime().optional(), lastSuccessfulSyncAt: z.iso.datetime().optional(), lastSyncDurationMs: z.number().nonnegative().optional(), lastSyncErrorCode: z.string().optional() }).strict(),
+  telemetryScope: z.literal('mcp-initiated-syncs-only'), unavailableMetadata: z.tuple([z.literal('initialFullSync'), z.literal('sdkInternalScheduleServiceRuns')]),
+  diagnosticCode: z.string().optional()
+}).strict().describe('Sanitized process-lifetime runtime status.');
 
 export const accountsOutputSchema = z.object({ accounts: z.array(accountSchema) }).strict()
   .describe('All Actual accounts and available ledger balances.');

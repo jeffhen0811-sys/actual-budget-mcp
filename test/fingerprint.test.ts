@@ -33,6 +33,7 @@ function reader(ruleValue = 'market', payeeName = 'Market', transferId = 'recipr
       actions: [{ op: 'set', field: 'payee', value: 'payee' }],
       writable: true
     }],
+    listSchedules: async () => ({ schedules: [{ id: 'schedule', name: 'Rent', writable: true }], page: { total: 1 } }),
     getTransactions: async (accountId: string) => [{ id: `transaction-${accountId}`, account: accountId, transfer_id: transferId }],
     listBudgetMonths: async () => ({ months: ['2026-08', '2026-09'], count: 2 }),
     getBudgetMonth: async (month: string) => budget(month)

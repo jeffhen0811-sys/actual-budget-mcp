@@ -11,13 +11,18 @@ import {
   findPossibleDuplicatesOutputSchema,
   findPossibleTransfersOutputSchema,
   healthOutputSchema,
+  incomeSummaryOutputSchema,
+  listSchedulesOutputSchema,
   listBudgetMonthsOutputSchema,
   payeesOutputSchema,
   ruleSchema,
   rulesOutputSchema,
+  runtimeStatusOutputSchema,
   searchTransactionsInputSchema,
   searchTransactionsOutputSchema,
   searchTransfersOutputSchema,
+  spendingSummaryOutputSchema,
+  monthSummaryOutputSchema,
   transferPayeesOutputSchema,
   transactionOutputSchema,
   transactionsOutputSchema
@@ -29,6 +34,7 @@ import {
   REQUIRED_TEST_ACCOUNT_NAME,
   skipMessage
 } from '../real/env.js';
+import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 
 const environment = await loadRealTestEnvironment();
 if (!environment.configured) console.warn(skipMessage(environment, 'Real Actual integration read suite'));
@@ -36,12 +42,15 @@ const realDescribe = environment.configured ? describe : describe.skip;
 
 realDescribe.sequential('real Actual read integration', () => {
   let client: ActualClient;
+  let baselineFingerprint = '';
 
   beforeAll(async () => {
     client = new ActualClient(actualApiAdapter, () => integrationConfig());
+    baselineFingerprint = await permanentFixtureFingerprint(client);
   });
 
   afterAll(async () => {
+    if (client) expect(await permanentFixtureFingerprint(client)).toBe(baselineFingerprint);
     await client?.shutdown();
   });
 
@@ -256,5 +265,29 @@ realDescribe.sequential('real Actual read integration', () => {
     const reconciliation = await client.getAccountReconciliation(account.id, '2026-08-31');
     expect(() => accountReconciliationOutputSchema.parse(reconciliation)).not.toThrow();
     expect(reconciliation.balances.uncleared).toBe(reconciliation.balances.ledger - reconciliation.balances.cleared);
+  });
+
+  it('validates schedule, summary, and runtime read contracts without mutation', async () => {
+    const startedAt = performance.now();
+    const schedules = await client.listSchedules({ limit: 250, offset: 0 });
+    expect(() => listSchedulesOutputSchema.parse(schedules)).not.toThrow();
+    for (const schedule of schedules.schedules) {
+      expect(schedule).not.toHaveProperty('ruleId');
+      expect(schedule).not.toHaveProperty('conditions');
+      expect(schedule).not.toHaveProperty('actions');
+    }
+    const month = await client.getMonthSummary('2026-08');
+    expect(() => monthSummaryOutputSchema.parse(month)).not.toThrow();
+    expect(month.ledger.netAmount).toBe(month.ledger.incomeAmount + month.ledger.expenseAmount);
+    const range = { startDate: '2026-08-01', endDate: '2026-08-31' };
+    const spending = await client.getSpendingSummary(range);
+    const income = await client.getIncomeSummary(range);
+    expect(() => spendingSummaryOutputSchema.parse(spending)).not.toThrow();
+    expect(() => incomeSummaryOutputSchema.parse(income)).not.toThrow();
+    const status = await client.runtimeStatus();
+    expect(() => runtimeStatusOutputSchema.parse(status)).not.toThrow();
+    expect(status).toMatchObject({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
+    expect(JSON.stringify(status)).not.toContain(process.env.ACTUAL_SYNC_ID ?? '__missing__');
+    console.info(`v0.7 read observation: schedules=${schedules.page.returned} elapsedMs=${Math.round(performance.now() - startedAt)}`);
   });
 });

@@ -1,6 +1,6 @@
 # Actual Budget MCP
 
-A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.6.0 toolset over stdio.
+A secure, client-independent Model Context Protocol server that exposes a focused Actual Budget v0.7.0 toolset over stdio.
 
 ## Quick Start
 
@@ -16,7 +16,7 @@ Export the required environment variables and run `npm start`. An MCP host norma
 
 ## Features
 
-- Fifty-three read, transfer, diagnostic, reconciliation, transaction, budget-planning, budget-structure, payee, rule, health, and synchronization tools.
+- Sixty-two schedule, summary, runtime, transfer, diagnostic, reconciliation, transaction, budget-planning, structure, payee, rule, health, and synchronization tools.
 - Lazy Actual initialization, a persistent SDK-managed cache, FIFO access, and one process per cache directory.
 - Strict Zod input contracts, bounded reads and imports, explicit destructive confirmation, and automatic synchronization after mutations.
 - Structured results plus JSON text compatibility.
@@ -51,6 +51,8 @@ The installer validates Node.js, performs a locked dependency installation, buil
 | `ACTUAL_SYNC_ID` | Yes | Sync ID of the selected budget. |
 | `ACTUAL_ENCRYPTION_PASSWORD` | Only for encrypted budgets | End-to-end encryption password; it is distinct from the server password. |
 | `ACTUAL_DATA_DIR` | No | SDK cache directory; defaults to `/tmp/actual-budget-mcp`. |
+| `ACTUAL_MCP_READ_ONLY` | No | Defaults to `false`. When `true`, blocks every caller-invoked write/destructive tool, including `actual_sync`. |
+| `ACTUAL_MCP_ALLOW_DESTRUCTIVE` | No | Defaults to `true`. When `false`, independently blocks every destructive tool even when per-call confirmation is supplied. |
 
 Do not use the Actual Server container's `/data` volume as `ACTUAL_DATA_DIR`. Run only one MCP process for a cache directory.
 
@@ -100,6 +102,15 @@ All amounts use Actual's integer minor-unit representation: for example, `12030`
 | `actual_find_possible_transfers` | bounded dates, window, filters | Reports unique or ambiguous opposite-amount cross-account candidates without linking them. |
 | `actual_find_possible_duplicates` | bounded dates, window, filters | Reports strong or likely same-account candidates without merging or deleting them. |
 | `actual_get_account_reconciliation` | `accountId`, optional cutoff/statement | Returns split-safe ledger, cleared, reconciled, uncleared, statement, and separate bank-balance evidence. |
+| `actual_list_schedules` | optional account/completion filters, `limit`, `offset` | Lists stable schedule projections without rule internals. |
+| `actual_get_schedule` | `scheduleId` | Gets one exact schedule through the complete public list. |
+| `actual_create_schedule` | account, explicit amount/date, posting behavior, optional name/payee | Creates, synchronizes once, and verifies a supported schedule. |
+| `actual_update_schedule` | `scheduleId` plus a non-empty editable subset | Applies desired state, synchronizes when changed, and verifies read-back. |
+| `actual_delete_schedule` | `scheduleId`, `confirmDestructive: true` | Deletes the schedule and linked rule while verifying posted transaction history remains. |
+| `actual_get_month_summary` | month and optional scope | Returns signed ledger totals plus the official full-budget month section when compatible. |
+| `actual_get_spending_summary` | bounded dates and optional scope | Returns signed expense totals, category/group breakdowns, and bounded top payees. |
+| `actual_get_income_summary` | bounded dates and optional scope | Returns signed income totals, income-category breakdown, and bounded top payees. |
+| `actual_get_runtime_status` | `{}` | Returns sanitized versions, connectivity, uptime, modes, cache/queue state, and MCP-observed sync telemetry. |
 
 Example read input:
 
@@ -332,6 +343,24 @@ Budget copy defaults are `dryRun: true`, `mode: "fill-empty"`, `includeCarryover
 
 Copy execution uses sequential official mutations in one FIFO lifecycle, followed by one synchronization and complete read-back verification. It is not transactional and is not automatically retried or rolled back. A partial failure returns attempted/completed IDs, captured original target values, synchronization state, and recovery guidance. Run `actual_sync`, read the target month, and inspect those IDs before deciding on manual recovery; do not replay the copy blindly.
 
+## Schedules
+
+Actual schedules are recurring-transaction instructions stored by Actual; they are not external cron jobs. One-time dates use `{ "type": "oneTime", "date": "YYYY-MM-DD" }`. Recurring dates support `daily`, `weekly`, `monthly`, and `yearly`, a positive interval, start date, optional before/after weekend movement, coherent never/count/date ends, and installed monthly day or ordinal-weekday patterns. Weekly/yearly calendar position comes from the start date. Amounts are always explicit signed safe integers using `exact`, `approximate`, or ordered `between` variants; explicit zero is valid.
+
+Create and changed updates synchronize once and verify exact-ID read-back. Delete requires both runtime permission and literal confirmation, captures exact linked transaction IDs, uses the official deletion method, and verifies history remains. Category assignment, transfer schedules, raw rules/recurrence, manual posting, skip-next-date, discovery, clock manipulation, and force-running Actual's schedule service are unsupported.
+
+## Financial summaries
+
+The three summary tools compile fixed typed `transactions` queries; callers cannot provide ActualQL, tables, fields, operators, joins, or grouping expressions. Ranges are inclusive and capped at 366 days. Top payees default to 10 and cap at 50. Amounts remain signed minor units. Transfers, starting balances, and split parents are excluded; inline split children are counted once. Categorized rows follow the category income flag, so positive expense refunds reduce expense and negative income adjustments reduce income. Uncategorized on-budget values use their sign and remain explicitly reported. Off-budget values, when requested, appear only as separate inflow/outflow/net cash flow and never change on-budget totals.
+
+## Runtime authorization and status
+
+`ACTUAL_MCP_READ_ONLY=true` is an MCP tool authorization boundary: all write and destructive handlers, including explicit sync, fail with `READ_ONLY_MODE` before the Actual adapter call. It cannot make the pinned local-first SDK globally receive-only—budget initialization performs a full sync, and Actual may run its internal schedule service after sync. `ACTUAL_MCP_ALLOW_DESTRUCTIVE=false` adds an independent `DESTRUCTIVE_OPERATIONS_DISABLED` kill switch; when enabled, existing per-call confirmations and domain preflights still apply.
+
+Runtime status reports only process-observed values: sanitized server URL, connectivity, loaded state, package versions, uptime, modes, cache lock, safe queue names/counts, and MCP-initiated sync telemetry. It never exposes credentials, sync IDs, full cache paths, financial arguments, raw errors, or invented persistent sync history.
+
+The v0.7.0 operational/domain error codes are stable: `READ_ONLY_MODE` blocks caller-initiated writes (including sync), `DESTRUCTIVE_OPERATIONS_DISABLED` blocks destructive tools before domain preflight, `SCHEDULE_NOT_FOUND` identifies an absent exact schedule, `INVALID_RECURRENCE` rejects unsupported date/amount schedule shapes, `SCHEDULE_REFERENCE_INVALID` rejects missing, closed, or transfer references, and `INVALID_SUMMARY_RANGE` rejects malformed, reversed, oversized, or otherwise invalid summary bounds.
+
 ## Development
 
 ```bash
@@ -432,13 +461,13 @@ The updater uses `git pull --ff-only`, `npm ci`, type checking, tests, and a fre
 Docker is optional. Keep stdin open and mount a cache that is separate from Actual Server data:
 
 ```bash
-docker build -t actual-budget-mcp:0.6.0 .
+docker build -t actual-budget-mcp:0.7.0 .
 docker run --rm -i \
   -e ACTUAL_SERVER_URL=http://actual-budget:5006 \
   -e ACTUAL_PASSWORD=replace-at-runtime \
   -e ACTUAL_SYNC_ID=replace-at-runtime \
   -v actual-mcp-cache:/var/lib/actual-budget-mcp \
-  actual-budget-mcp:0.6.0
+  actual-budget-mcp:0.7.0
 ```
 
 ## Security
@@ -464,4 +493,4 @@ docker run --rm -i \
 
 ## Scope
 
-Version 0.6.0 does not include Account Groups, reorder operations, public/raw ActualQL, Pluggy integration, schedules, generic historical reports, investment tools, LLM categorization, financial recommendations, linking or merging transactions, reconciliation mutation, manual rule execution, unpublished-rule preview, or an HTTP MCP transport.
+Version 0.7.0 does not include Account Groups, reorder operations, public/raw ActualQL, Pluggy or bank sync, external cron, notification/alert engines, investments, dashboards, generic reports/query engines, LLM classification, reconciliation mutation, manual schedule/rule execution, transfer schedules, or an HTTP MCP transport.

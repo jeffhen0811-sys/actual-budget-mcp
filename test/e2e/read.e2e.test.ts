@@ -7,6 +7,8 @@ import {
   budgetSummaryOutputSchema,
   categoriesOutputSchema,
   healthOutputSchema,
+  incomeSummaryOutputSchema,
+  listSchedulesOutputSchema,
   findPossibleDuplicatesOutputSchema,
   findPossibleTransfersOutputSchema,
   getTransferOutputSchema,
@@ -15,11 +17,15 @@ import {
   payeesOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
+  runtimeStatusOutputSchema,
   searchTransactionsOutputSchema,
   searchTransfersOutputSchema,
+  spendingSummaryOutputSchema,
+  monthSummaryOutputSchema,
   transactionOutputSchema,
   transactionsOutputSchema,
-  transferPayeesOutputSchema
+  transferPayeesOutputSchema,
+  syncOutputSchema
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
 import { CARD_TEST_ACCOUNT_NAME, loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
@@ -39,10 +45,10 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     await running?.close();
   });
 
-  it('discovers exactly 53 v0.6.0 tools with strict schemas and compatible annotations through stdio', async () => {
+  it('discovers exactly 62 v0.7.0 tools with strict schemas and compatible v0.6.0 annotations through stdio', async () => {
     const { tools } = await running.client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(53);
+    expect(tools).toHaveLength(62);
     for (const tool of tools) {
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
@@ -67,6 +73,12 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       'actual_find_possible_transfers', 'actual_find_possible_duplicates', 'actual_get_account_reconciliation'
     ]) expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
     expect(tools.find(tool => tool.name === 'actual_create_transfer')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    for (const name of ['actual_list_schedules', 'actual_get_schedule', 'actual_get_month_summary', 'actual_get_spending_summary', 'actual_get_income_summary', 'actual_get_runtime_status']) {
+      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
+    }
+    expect(tools.find(tool => tool.name === 'actual_create_schedule')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false });
+    expect(tools.find(tool => tool.name === 'actual_update_schedule')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: true });
+    expect(tools.find(tool => tool.name === 'actual_delete_schedule')?.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true, idempotentHint: false });
   });
 
   it('returns structured entity-preserving errors for all missing structural confirmations and stays operational', async () => {
@@ -82,7 +94,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       });
       assertNoConfiguredSecrets(result);
     }
-    expect((await running.client.listTools()).tools).toHaveLength(53);
+    expect((await running.client.listTools()).tools).toHaveLength(62);
   });
 
   it('calls health, accounts, categories, and payees with matching structured and JSON content', async () => {
@@ -106,6 +118,63 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     const summary = await callTool(running, 'actual_get_budget_summary', { month, limit: 500 }, budgetSummaryOutputSchema);
     expect(summary.month).toBe(month);
     expect(summary.totalSpent).toBe(detail.totalSpent);
+  });
+
+  it('reads schedules, ledger summaries, and sanitized runtime status through compiled stdio', async () => {
+    const schedules = await callTool(running, 'actual_list_schedules', { limit: 250, offset: 0 }, listSchedulesOutputSchema);
+    expect(schedules.page.returned).toBe(schedules.schedules.length);
+    for (const schedule of schedules.schedules) {
+      expect(schedule).not.toHaveProperty('ruleId');
+      expect(schedule).not.toHaveProperty('conditions');
+      expect(schedule).not.toHaveProperty('actions');
+    }
+    const month = await callTool(running, 'actual_get_month_summary', { month: '2026-08' }, monthSummaryOutputSchema);
+    expect(month.ledger.netAmount).toBe(month.ledger.incomeAmount + month.ledger.expenseAmount);
+    const range = { startDate: '2026-08-01', endDate: '2026-08-31' };
+    const spending = await callTool(running, 'actual_get_spending_summary', range, spendingSummaryOutputSchema);
+    const income = await callTool(running, 'actual_get_income_summary', range, incomeSummaryOutputSchema);
+    expect(spending.source).toBe('fixed-actualql-ledger');
+    expect(income.source).toBe('fixed-actualql-ledger');
+    const status = await callTool(running, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
+    expect(status).toMatchObject({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
+    expect(JSON.stringify(status)).not.toContain(process.env.ACTUAL_SYNC_ID ?? '__missing__');
+  });
+
+  it('enforces read-only authorization before mutation handlers while reads remain available', async () => {
+    const readOnly = await startMcp('.actual-e2e-data/read-only', {
+      ACTUAL_MCP_READ_ONLY: 'true', ACTUAL_MCP_ALLOW_DESTRUCTIVE: 'false'
+    });
+    try {
+      expect((await callTool(readOnly, 'actual_list_accounts', {}, accountsOutputSchema)).accounts.length).toBeGreaterThan(0);
+      for (const [name, args] of [
+        ['actual_sync', {}],
+        ['actual_create_schedule', {
+          accountId: 'policy-short-circuit', amount: { type: 'exact', amount: 0 },
+          date: { type: 'oneTime', date: '2026-12-31' }, postsTransaction: false
+        }],
+        ['actual_delete_schedule', { scheduleId: 'policy-short-circuit', confirmDestructive: true }]
+      ] as const) {
+        const result = await callToolExpectingError(readOnly, name, args);
+        expect(result.structuredContent).toMatchObject({ error: { code: 'READ_ONLY_MODE' } });
+      }
+      const status = await callTool(readOnly, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
+      expect(status.modes).toEqual({ readOnly: true, allowDestructive: false, effectiveWriteAllowed: false });
+    } finally {
+      assertNoConfiguredSecrets(readOnly.stderr());
+      await readOnly.close();
+    }
+  });
+
+  it('resets process-lifetime uptime and observed sync telemetry after restart', async () => {
+    await callTool(running, 'actual_sync', {}, syncOutputSchema);
+    const observed = await callTool(running, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
+    expect(observed.syncTelemetry.lastSyncAttemptAt).toEqual(expect.any(String));
+    expect(observed.syncTelemetry.lastSuccessfulSyncAt).toEqual(expect.any(String));
+    await running.close();
+    running = await startMcp('.actual-e2e-data/read-restarted');
+    const restarted = await callTool(running, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
+    expect(restarted.syncTelemetry).toEqual({});
+    expect(restarted.uptimeMs).toBeLessThanOrEqual(observed.uptimeMs);
   });
 
   it('reads individual payees and the complete ranked rule surface through compiled stdio', async () => {

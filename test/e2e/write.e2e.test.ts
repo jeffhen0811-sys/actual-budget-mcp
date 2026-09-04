@@ -21,6 +21,7 @@ import {
   healthOutputSchema,
   getTransferOutputSchema,
   importTransactionsOutputSchema,
+  incomeSummaryOutputSchema,
   listBudgetMonthsOutputSchema,
   payeesOutputSchema,
   payeeDeletionOutputSchema,
@@ -29,10 +30,16 @@ import {
   payeeOutputSchema,
   previewImportOutputSchema,
   ruleDeletionOutputSchema,
+  scheduleDeletionOutputSchema,
   ruleMutationOutputSchema,
   ruleOutputSchema,
   rulesOutputSchema,
+  getScheduleOutputSchema,
+  listSchedulesOutputSchema,
+  monthSummaryOutputSchema,
+  scheduleMutationOutputSchema,
   syncOutputSchema,
+  spendingSummaryOutputSchema,
   transactionOutputSchema,
   searchTransactionsOutputSchema,
   transactionMutationOutputSchema,
@@ -50,6 +57,7 @@ const TEST_DATE = '2026-08-30';
 const OPENING_RANGE_START = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
 const OPENING_RANGE_END = new Date(Date.now() + 30 * 86_400_000).toISOString().slice(0, 10);
 const DATA_DIR = '.actual-e2e-data/write';
+const CLEANUP_DATA_DIR = '.actual-e2e-data/write-cleanup';
 const environment = await loadRealTestEnvironment();
 if (!environment.configured) console.warn(skipMessage(environment, 'MCP stdio E2E write suite'));
 else if (!environment.allowWrites) console.warn('MCP stdio E2E write suite skipped: ACTUAL_INTEGRATION_ALLOW_WRITES is not true.');
@@ -70,6 +78,8 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       listCategories: async () => (await callTool(running, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups,
       listPayees: async () => (await callTool(running, 'actual_list_payees', {}, payeesOutputSchema)).payees,
       listRules: async () => (await callTool(running, 'actual_list_rules', {}, rulesOutputSchema)).rules,
+      listSchedules: async (options?: { limit?: number; offset?: number }) =>
+        await callTool(running, 'actual_list_schedules', options ?? {}, listSchedulesOutputSchema),
       getTransactions: async (targetAccountId: string, startDate: string, endDate: string) =>
         (await callTool(running, 'actual_get_transactions', { accountId: targetAccountId, startDate, endDate }, transactionsOutputSchema)).transactions,
       listBudgetMonths: async () => callTool(running, 'actual_list_budget_months', {}, listBudgetMonthsOutputSchema),
@@ -122,6 +132,8 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     try {
       if (!running && environment.configured) running = await startMcp(DATA_DIR);
       if (running && accountId && importedId) {
+        await running.close();
+        running = await startMcp(CLEANUP_DATA_DIR);
         if (budgetCleanup) {
           await callTool(running, 'actual_set_budget_amount', { month: budgetCleanup.sourceMonth, categoryId: budgetCleanup.categoryId, amount: 0 }, budgetAmountMutationOutputSchema);
           await callTool(running, 'actual_set_budget_amount', { month: budgetCleanup.targetMonth, categoryId: budgetCleanup.categoryId, amount: 0 }, budgetAmountMutationOutputSchema);
@@ -131,6 +143,7 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
         }
         await registry.cleanup({
           transaction: async resource => { await callTool(running, 'actual_delete_transaction', { transactionId: resource.id, confirmDestructive: true }, transactionMutationOutputSchema); },
+          schedule: async resource => { await callTool(running, 'actual_delete_schedule', { scheduleId: resource.id, confirmDestructive: true }, scheduleDeletionOutputSchema); },
           verifyTransactionsAbsent: async ids => {
             for (const id of ids) expect((await callToolExpectingError(running, 'actual_get_transaction', { transactionId: id })).structuredContent)
               .toMatchObject({ error: { code: 'NOT_FOUND' } });
@@ -546,6 +559,120 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     }
     await callTool(running, 'actual_delete_account', { accountId: account.account.id, confirmDestructive: true }, accountDeletionOutputSchema);
     registry.release('account', account.account.id);
+  });
+
+  it('runs an isolated schedule lifecycle and destructive kill-switch check through compiled stdio', async () => {
+    const runId = randomUUID();
+    const account = await callTool(running, 'actual_create_account', { name: `MCP_E2E_SCHEDULE_ACCOUNT_${runId}` }, accountMutationOutputSchema);
+    registry.register('account', account.account.id, account.account.name);
+    const payee = await callTool(running, 'actual_create_payee', { name: `MCP E2E Schedule Payee ${runId}` }, payeeMutationOutputSchema);
+    registry.register('payee', payee.payee.id, payee.payee.name);
+    const created = await callTool(running, 'actual_create_schedule', {
+      name: `MCP E2E Schedule ${runId}`, accountId: account.account.id, payeeId: payee.payee.id,
+      amount: { type: 'exact', amount: -2345 }, date: { type: 'oneTime', date: '2026-12-20' }, postsTransaction: false
+    }, scheduleMutationOutputSchema);
+    registry.register('schedule', created.schedule.id, created.schedule.name ?? `schedule-${runId}`);
+    expect((await callTool(running, 'actual_list_schedules', { accountId: account.account.id }, listSchedulesOutputSchema)).schedules.map(item => item.id)).toContain(created.schedule.id);
+    expect((await callTool(running, 'actual_get_schedule', { scheduleId: created.schedule.id }, getScheduleOutputSchema)).schedule).toEqual(created.schedule);
+    const updated = await callTool(running, 'actual_update_schedule', {
+      scheduleId: created.schedule.id, name: `MCP E2E Schedule Updated ${runId}`,
+      amount: { type: 'between', minAmount: -2600, maxAmount: -2200 },
+      date: { type: 'recurring', frequency: 'weekly', start: '2026-12-21', interval: 2, weekend: 'none', end: { type: 'never' } },
+      postsTransaction: true
+    }, scheduleMutationOutputSchema);
+    expect(updated).toMatchObject({ changed: true, schedule: { id: created.schedule.id, postsTransaction: true } });
+    expect((await callToolExpectingError(running, 'actual_delete_schedule', { scheduleId: created.schedule.id })).structuredContent)
+      .toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
+
+    const destructiveDisabled = await startMcp('.actual-e2e-data/destructive-disabled', { ACTUAL_MCP_ALLOW_DESTRUCTIVE: 'false' });
+    try {
+      const refusal = await callToolExpectingError(destructiveDisabled, 'actual_delete_schedule', { scheduleId: created.schedule.id, confirmDestructive: true });
+      expect(refusal.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_OPERATIONS_DISABLED' } });
+    } finally {
+      assertNoConfiguredSecrets(destructiveDisabled.stderr());
+      await destructiveDisabled.close();
+    }
+    expect((await callTool(running, 'actual_get_schedule', { scheduleId: created.schedule.id }, getScheduleOutputSchema)).schedule.id).toBe(created.schedule.id);
+    const deleted = await callTool(running, 'actual_delete_schedule', { scheduleId: created.schedule.id, confirmDestructive: true }, scheduleDeletionOutputSchema);
+    expect(deleted).toMatchObject({ deletedScheduleId: created.schedule.id, historicalTransactionsPreserved: true });
+    registry.release('schedule', created.schedule.id);
+    await callTool(running, 'actual_delete_payee', { payeeId: payee.payee.id, confirmDestructive: true }, payeeDeletionOutputSchema);
+    registry.release('payee', payee.payee.id);
+    await callTool(running, 'actual_delete_account', { accountId: account.account.id, confirmDestructive: true }, accountDeletionOutputSchema);
+    registry.release('account', account.account.id);
+  });
+
+  it('verifies a controlled signed financial dataset through the compiled stdio client', async () => {
+    const runId = randomUUID();
+    const date = new Date().toISOString().slice(0, 10);
+    const onBudget = await callTool(running, 'actual_create_account', { name: `MCP_E2E_SUMMARY_ON_${runId}`, initialBalance: 100 }, accountMutationOutputSchema);
+    const peer = await callTool(running, 'actual_create_account', { name: `MCP_E2E_SUMMARY_PEER_${runId}` }, accountMutationOutputSchema);
+    const offBudget = await callTool(running, 'actual_create_account', { name: `MCP_E2E_SUMMARY_OFF_${runId}`, offbudget: true }, accountMutationOutputSchema);
+    for (const account of [onBudget, peer, offBudget]) registry.register('account', account.account.id, account.account.name);
+    const opening = (await callTool(running, 'actual_get_transactions', {
+      accountId: onBudget.account.id, startDate: date, endDate: date
+    }, transactionsOutputSchema)).transactions.find(item => item.starting_balance_flag === true);
+    expect(opening).toBeDefined();
+    registry.register('transaction', opening!.id, `e2e-summary-opening-${runId}`);
+
+    const expenseGroup = await callTool(running, 'actual_create_category_group', { name: `MCP_E2E_SUMMARY_EXPENSE_GROUP_${runId}` }, categoryGroupMutationOutputSchema);
+    const incomeGroup = await callTool(running, 'actual_create_category_group', { name: `MCP_E2E_SUMMARY_INCOME_GROUP_${runId}`, isIncome: true }, categoryGroupMutationOutputSchema);
+    registry.register('categoryGroup', expenseGroup.categoryGroup.id, expenseGroup.categoryGroup.name);
+    registry.register('categoryGroup', incomeGroup.categoryGroup.id, incomeGroup.categoryGroup.name);
+    const expenseCategory = await callTool(running, 'actual_create_category', {
+      name: `MCP_E2E_SUMMARY_EXPENSE_${runId}`, groupId: expenseGroup.categoryGroup.id
+    }, categoryMutationOutputSchema);
+    const incomeCategory = await callTool(running, 'actual_create_category', {
+      name: `MCP_E2E_SUMMARY_INCOME_${runId}`, groupId: incomeGroup.categoryGroup.id
+    }, categoryMutationOutputSchema);
+    registry.register('category', expenseCategory.category.id, expenseCategory.category.name);
+    registry.register('category', incomeCategory.category.id, incomeCategory.category.name);
+    const payee = await callTool(running, 'actual_create_payee', { name: `MCP E2E Summary Payee ${runId}` }, payeeMutationOutputSchema);
+    registry.register('payee', payee.payee.id, payee.payee.name);
+
+    const imported = await callTool(running, 'actual_import_transactions', {
+      accountId: onBudget.account.id,
+      transactions: [
+        { date, amount: 10000, imported_id: `e2e-summary-income:${runId}`, payee: payee.payee.id, category: incomeCategory.category.id },
+        { date, amount: -1000, imported_id: `e2e-summary-income-adjustment:${runId}`, payee: payee.payee.id, category: incomeCategory.category.id },
+        { date, amount: -5000, imported_id: `e2e-summary-expense:${runId}`, payee: payee.payee.id, category: expenseCategory.category.id },
+        { date, amount: 500, imported_id: `e2e-summary-refund:${runId}`, payee: payee.payee.id, category: expenseCategory.category.id },
+        { date, amount: 250, imported_id: `e2e-summary-uncat-in:${runId}` },
+        { date, amount: -200, imported_id: `e2e-summary-uncat-out:${runId}` }
+      ]
+    }, importTransactionsOutputSchema);
+    expect(imported.errors).toEqual([]);
+    for (const id of imported.added) registry.register('transaction', id, `e2e-summary-import-${runId}`);
+    const offImported = await callTool(running, 'actual_import_transactions', {
+      accountId: offBudget.account.id,
+      transactions: [
+        { date, amount: 700, imported_id: `e2e-summary-off-in:${runId}` },
+        { date, amount: -300, imported_id: `e2e-summary-off-out:${runId}` }
+      ]
+    }, importTransactionsOutputSchema);
+    expect(offImported.errors).toEqual([]);
+    for (const id of offImported.added) registry.register('transaction', id, `e2e-summary-off-${runId}`);
+    const transfer = await callTool(running, 'actual_create_transfer', {
+      fromAccountId: onBudget.account.id, toAccountId: peer.account.id, amount: 321, date, dryRun: false, confirmWrite: true
+    }, createTransferOutputSchema);
+    const transferIds = [transfer.pair!.transactionA!.id, transfer.pair!.transactionB!.id] as const;
+    registry.registerTransferPair(transfer.pair!.pairKey, transferIds, `e2e-summary-transfer-${runId}`);
+
+    const scope = { accountIds: [onBudget.account.id, peer.account.id, offBudget.account.id], includeOffbudget: true };
+    const month = await callTool(running, 'actual_get_month_summary', { month: date.slice(0, 7), ...scope }, monthSummaryOutputSchema);
+    expect(month).toMatchObject({
+      budget: { available: false },
+      ledger: {
+        incomeAmount: 9250, expenseAmount: -4700, netAmount: 4550,
+        transactionCount: 6, categorizedCount: 4, uncategorizedCount: 2,
+        offbudgetCashFlow: { inflowAmount: 700, outflowAmount: -300, netChange: 400, transactionCount: 2 }
+      }
+    });
+    const range = { startDate: date, endDate: date, ...scope };
+    expect(await callTool(running, 'actual_get_spending_summary', range, spendingSummaryOutputSchema))
+      .toMatchObject({ netExpenseAmount: -4700, transactionCount: 3, uncategorizedExpenseAmount: -200 });
+    expect(await callTool(running, 'actual_get_income_summary', range, incomeSummaryOutputSchema))
+      .toMatchObject({ netIncomeAmount: 9250, transactionCount: 3, uncategorizedIncomeAmount: 250 });
   });
 
   it('rejects all structural deletes without confirmation and remains operational', async () => {

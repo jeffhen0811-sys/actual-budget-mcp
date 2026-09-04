@@ -12,6 +12,7 @@ const sdk = vi.hoisted(() => ({
   resetBudgetHold: vi.fn(), batchBudgetUpdates: vi.fn(),
   createPayee: vi.fn(), updatePayee: vi.fn(), deletePayee: vi.fn(), mergePayees: vi.fn(),
   getPayeeRules: vi.fn(), getRules: vi.fn(), createRule: vi.fn(), updateRule: vi.fn(), deleteRule: vi.fn(),
+  getSchedules: vi.fn(), createSchedule: vi.fn(), updateSchedule: vi.fn(), deleteSchedule: vi.fn(),
   updateTransaction: vi.fn(), deleteTransaction: vi.fn()
 }));
 

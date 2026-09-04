@@ -11,13 +11,13 @@ export interface RunningMcp {
   close(): Promise<void>;
 }
 
-export async function startMcp(dataDir: string): Promise<RunningMcp> {
+export async function startMcp(dataDir: string, overrides: Record<string, string> = {}): Promise<RunningMcp> {
   let capturedStderr = '';
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['dist/index.js'],
     cwd: process.cwd(),
-    env: childProcessEnvironment(dataDir),
+    env: { ...childProcessEnvironment(dataDir), ...overrides },
     stderr: 'pipe'
   });
   transport.stderr?.on('data', chunk => { capturedStderr += String(chunk); });
@@ -33,7 +33,17 @@ export async function startMcp(dataDir: string): Promise<RunningMcp> {
 
 export async function callTool<T>(running: RunningMcp, name: string, args: Record<string, unknown>, schema: ZodType<T>): Promise<T> {
   const result = await running.client.callTool({ name, arguments: args });
-  if (result.isError) throw new Error(`MCP tool ${name} failed: ${JSON.stringify(result.structuredContent ?? result.content)}`);
+  if (result.isError) {
+    const error = new Error(`MCP tool ${name} failed: ${JSON.stringify(result.structuredContent ?? result.content)}`) as Error & { code?: string };
+    const structured = result.structuredContent;
+    if (structured && typeof structured === 'object' && 'error' in structured) {
+      const publicError = structured.error;
+      if (publicError && typeof publicError === 'object' && 'code' in publicError && typeof publicError.code === 'string') {
+        error.code = publicError.code;
+      }
+    }
+    throw error;
+  }
   const text = result.content.find(item => item.type === 'text');
   if (!text || text.type !== 'text') throw new Error(`MCP tool ${name} returned no JSON text content.`);
   const textual = schema.parse(JSON.parse(text.text) as unknown);

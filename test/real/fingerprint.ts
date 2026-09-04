@@ -18,6 +18,7 @@ interface FingerprintReader {
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<Array<{ id: string; [key: string]: unknown }>>;
   listBudgetMonths(): Promise<{ months: string[]; count: number }>;
   getBudgetMonth(month: string): Promise<PublicBudgetMonth>;
+  listSchedules(options?: { limit?: number; offset?: number }): Promise<{ schedules: Array<{ id: string }>; page: { total: number } }>;
 }
 
 function stable<T>(values: T[], key: (value: T) => string): T[] {
@@ -53,6 +54,7 @@ export async function permanentFixtureFingerprint(reader: FingerprintReader): Pr
     })),
     payees: stable(await reader.listPayees(), payee => payee.id),
     rules: stable(await reader.listRules(), rule => rule.id),
+    schedules: stable((await reader.listSchedules({ limit: 250, offset: 0 })).schedules, schedule => schedule.id),
     budgets
   };
   return createHash('sha256').update(JSON.stringify(payload)).digest('hex');

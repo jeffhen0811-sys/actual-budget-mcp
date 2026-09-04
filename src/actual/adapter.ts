@@ -10,6 +10,32 @@ export interface AdapterCategoryGroup {
   id: string; name: string; is_income?: boolean; hidden?: boolean; categories?: AdapterCategory[];
 }
 export interface AdapterPayee { id: string; name: string; transfer_acct?: string | null }
+export interface AdapterRecurPattern { value: number; type: 'SU' | 'MO' | 'TU' | 'WE' | 'TH' | 'FR' | 'SA' | 'day' }
+export interface AdapterRecurConfig {
+  frequency: 'daily' | 'weekly' | 'monthly' | 'yearly';
+  interval?: number;
+  patterns?: AdapterRecurPattern[];
+  skipWeekend?: boolean;
+  start: string;
+  endMode?: 'never' | 'after_n_occurrences' | 'on_date';
+  endOccurrences?: number;
+  endDate?: string;
+  weekendSolveMode?: 'before' | 'after';
+}
+export interface AdapterSchedule {
+  id: string;
+  name?: string;
+  posts_transaction: boolean;
+  rule?: string;
+  next_date?: string;
+  completed?: boolean;
+  payee?: string | null;
+  account?: string | null;
+  amount?: number | { num1: number; num2: number };
+  amountOp: 'is' | 'isapprox' | 'isbetween';
+  date: string | AdapterRecurConfig;
+  [key: string]: unknown;
+}
 export interface AdapterRuleCondition {
   field: string;
   op: string;
@@ -43,6 +69,7 @@ export interface AdapterTransaction {
   isTransfer?: boolean;
   is_parent?: boolean; is_child?: boolean; parent_id?: string | null;
   payee_name?: string | null; category_name?: string | null;
+  schedule?: string | null;
   subtransactions?: AdapterTransaction[];
 }
 export interface AdapterBudgetCategory extends Record<string, unknown> {
@@ -65,6 +92,7 @@ export interface AdapterBudgetMonth {
 export interface ImportTransaction {
   account: string; date: string; amount: number; imported_id: string; payee_name?: string;
   payee?: string; imported_payee?: string; notes?: string; cleared?: boolean; category?: string;
+  subtransactions?: Array<{ amount: number; category?: string; notes?: string }>;
 }
 
 export interface AdapterImportOptions {
@@ -129,6 +157,10 @@ export interface ActualApiAdapter {
   createRule(rule: Omit<AdapterRule, 'id'>): Promise<AdapterRule>;
   updateRule(rule: AdapterRule): Promise<AdapterRule>;
   deleteRule(id: string): Promise<boolean>;
+  getSchedules(): Promise<AdapterSchedule[]>;
+  createSchedule(schedule: Omit<AdapterSchedule, 'id'>): Promise<string>;
+  updateSchedule(id: string, fields: Partial<AdapterSchedule>, resetNextDate?: boolean): Promise<string>;
+  deleteSchedule(id: string): Promise<void>;
   getTransactions(accountId: string, startDate: string, endDate: string): Promise<AdapterTransaction[]>;
   aqlQuery(query: AdapterTransactionQuery): Promise<unknown>;
   addTransactions(
@@ -213,6 +245,10 @@ export const actualApiAdapter: ActualApiAdapter = {
   createRule: actual.createRule as unknown as (rule: Omit<AdapterRule, 'id'>) => Promise<AdapterRule>,
   updateRule: actual.updateRule as unknown as (rule: AdapterRule) => Promise<AdapterRule>,
   deleteRule: actual.deleteRule,
+  getSchedules: actual.getSchedules as () => Promise<AdapterSchedule[]>,
+  createSchedule: actual.createSchedule as unknown as (schedule: Omit<AdapterSchedule, 'id'>) => Promise<string>,
+  updateSchedule: actual.updateSchedule as unknown as (id: string, fields: Partial<AdapterSchedule>, resetNextDate?: boolean) => Promise<string>,
+  deleteSchedule: actual.deleteSchedule,
   getTransactions: actual.getTransactions,
   aqlQuery: actual.aqlQuery,
   addTransactions: (accountId, transactions, options) => actual.addTransactions(accountId, transactions, options),

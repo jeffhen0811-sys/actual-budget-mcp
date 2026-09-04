@@ -60,11 +60,14 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
   it('reports server connectivity independently from the loaded local budget', async () => {
     const { api, client } = await fixture();
     vi.mocked(api.getServerVersion).mockResolvedValue({ error: 'network-failure' });
-    await expect(client.health()).resolves.toEqual({
+    await expect(client.health()).resolves.toMatchObject({
       connected: false,
       server: 'http://actual.local:5006',
       budgetLoaded: true,
-      diagnosticCode: 'network-failure'
+      diagnosticCode: 'network-failure',
+      mcpVersion: '0.7.0',
+      sdkVersion: '26.8.1',
+      readOnlyMode: false
     });
     await client.shutdown();
   });

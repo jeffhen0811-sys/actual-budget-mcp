@@ -1,6 +1,6 @@
 import { assertPayeeWriteAllowed, assertTransferPairOwned } from './ownership.js';
 
-export type OwnedResourceKind = 'transaction' | 'rule' | 'payee' | 'category' | 'categoryGroup' | 'account';
+export type OwnedResourceKind = 'transaction' | 'schedule' | 'rule' | 'payee' | 'category' | 'categoryGroup' | 'account';
 
 export interface OwnedResource {
   kind: OwnedResourceKind;
@@ -18,7 +18,16 @@ export type ResourceCleaners = Record<OwnedResourceKind, (resource: OwnedResourc
   verifyTransactionsAbsent?: (transactionIds: readonly [string, string]) => Promise<void>;
 };
 
-const CLEANUP_ORDER: readonly OwnedResourceKind[] = ['transaction', 'rule', 'payee', 'category', 'categoryGroup', 'account'];
+const CLEANUP_ORDER: readonly OwnedResourceKind[] = ['transaction', 'schedule', 'rule', 'payee', 'category', 'categoryGroup', 'account'];
+
+function cleanupErrorCode(error: unknown): string {
+  return error && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN';
+}
+
+function provesExactResourceAbsent(error: unknown): boolean {
+  const code = cleanupErrorCode(error);
+  return code === 'NOT_FOUND' || code === 'SCHEDULE_NOT_FOUND';
+}
 
 export class ResourceRegistry {
   private readonly resources: OwnedResource[] = [];
@@ -73,7 +82,17 @@ export class ResourceRegistry {
         await cleaners.verifyTransactionsAbsent(pair.transactionIds);
         this.transferPairs.splice(this.transferPairs.findIndex(item => item.id === pair.id), 1);
       } catch (error) {
-        const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN';
+        const errorCode = cleanupErrorCode(error);
+        if (provesExactResourceAbsent(error) && cleaners.verifyTransactionsAbsent) {
+          try {
+            await cleaners.verifyTransactionsAbsent(pair.transactionIds);
+            this.transferPairs.splice(this.transferPairs.findIndex(item => item.id === pair.id), 1);
+            continue;
+          } catch (verificationError) {
+            failures.push(`transferPair id=${pair.id} transactionIds=${pair.transactionIds.join(',')} name=${pair.name} errorCode=${cleanupErrorCode(verificationError)}`);
+            continue;
+          }
+        }
         failures.push(`transferPair id=${pair.id} transactionIds=${pair.transactionIds.join(',')} name=${pair.name} errorCode=${errorCode}`);
       }
     }
@@ -83,7 +102,11 @@ export class ResourceRegistry {
           await cleaners[resource.kind](resource);
           this.release(resource.kind, resource.id);
         } catch (error) {
-          const errorCode = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN';
+          const errorCode = cleanupErrorCode(error);
+          if (provesExactResourceAbsent(error)) {
+            this.release(resource.kind, resource.id);
+            continue;
+          }
           failures.push(`${resource.kind} id=${resource.id} name=${resource.name} errorCode=${errorCode}`);
         }
       }

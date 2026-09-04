@@ -17,7 +17,7 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 
 1. Run `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`.
 2. Launch `node dist/index.js` through an MCP inspector or compatible client.
-3. Confirm that exactly 53 tools are discoverable and that no raw ActualQL/query tool, field-specific search/bulk alias, relationship mutation, reconciliation lock/unlock, `actual_run_rules`, or `actual_preview_rule` is present.
+3. Confirm that exactly 62 tools are discoverable and that no raw ActualQL/query tool, manual schedule-posting tool, relationship mutation, reconciliation lock/unlock, `actual_run_rules`, or `actual_preview_rule` is present.
 4. Call `actual_health` and confirm that `connected` and `budgetLoaded` are true.
 5. Call account, category, payee, rule, and bounded transaction read tools. Verify integer minor-unit amounts, ranked `pre`/`default`/`post` stages, transfer-payee context, and verbatim user-authored values.
 6. Call `actual_list_budget_months`, read one month, and request a bounded summary. Verify official signed aggregates, hidden flags, and the reported envelope/tracking capabilities without asserting personal financial values.
@@ -27,6 +27,9 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 10. List transfer payees, inspect one valid pair and one available broken-pair fixture, search from either side, and repeat identical pages to prove deterministic keys and ordering.
 11. Run both candidate tools with boundary windows, filters, and pages; verify transfers/splits/starting balances are excluded, ambiguity is preserved, and fingerprints do not change.
 12. Run reconciliation with and without a signed statement balance; verify split-safe counts, public cutoff-balance coherence, status precedence, and separately labeled bank metadata.
+13. List schedules with pagination and account/completion filters, get any returned schedule by exact ID, and confirm no rule ID, conditions, or actions are exposed.
+14. Run month, spending, and income summaries over a controlled bounded range. Reconcile signed category/group/payee totals, refunds, negative income adjustments, uncategorized values, split leaves, transfer/starting-balance exclusions, and separately reported off-budget cash flow.
+15. Read runtime status and confirm versions, modes, connectivity, uptime, cache/queue state, and MCP-only sync telemetry are present without credentials, sync IDs, full cache paths, arguments, or raw upstream errors.
 
 ## Authorized Mutation Checks
 
@@ -50,6 +53,14 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 18. Preview a unique import, review its generated preview-only and existing IDs, then import the byte-equivalent normalized request with `expectedPreviewFingerprint`. Verify a modified request returns `PREVIEW_FINGERPRINT_MISMATCH` before mutation.
 19. Preview a same-budget-status transfer and a mixed-budget-status transfer, verifying signed sides and category placement with unchanged fingerprints. With explicit authorization, confirm creation, record both exact IDs as one cleanup unit, verify reciprocal identifiers and independent clear states, then delete the pair with one official call and verify both IDs absent.
 20. Preview and import an item with an exact ordinary payee and, when fixtures permit, an official transfer payee. Verify payee-over-name precedence, fingerprint parity, observed reciprocal effects, and exact pair cleanup.
+21. Create an isolated account and ordinary payee, then create a one-time exact-amount schedule. List/get it, update name/date/amount/posting behavior to a supported recurrence, confirm a no-op update does not synchronize, reject deletion without confirmation, delete the exact schedule with confirmation, and verify absence plus preservation of captured historical transaction IDs.
+22. With controlled categories/accounts, create categorized income, negative income adjustment, expense, refund, uncategorized inflow/outflow, starting balance, reciprocal transfer, split children, and off-budget inflow/outflow fixtures. Verify all three summaries mathematically, then remove every exact ID and restore the permanent fingerprint.
+
+## Operational Mode Checks
+
+1. Start a second process with `ACTUAL_MCP_READ_ONLY=true`. Confirm ordinary reads work and valid caller-invoked sync/write/destructive calls return `READ_ONLY_MODE` before their adapter operation. Record that SDK initialization still performs its pinned full-sync path.
+2. Start a process with `ACTUAL_MCP_ALLOW_DESTRUCTIVE=false`, attempt confirmed deletion of an exact temporary target, verify `DESTRUCTIVE_OPERATIONS_DISABLED` and target preservation, then clean it up from a separately authorized process.
+3. Observe a successful explicit sync in runtime status, restart the process, and verify uptime and MCP-observed sync telemetry reset without any persistent telemetry file.
 
 ## Restart Check
 
@@ -58,4 +69,4 @@ Stop after read-only checks if write authorization is absent. Do not place secre
 3. Verify health and reads.
 4. Repeat the original import and confirm that the previously deleted `imported_id` is not recreated under the default policy.
 
-Record the date, Actual Server version, MCP version/commit, exact 53-tool inventory result, installed query/import/transfer/balance findings, bounded diagnostic timings at representative and maximum supported sizes, search/preview/bulk timings, split/transfer availability, payee/rule and budget-mode capability outcomes, selected test months, pair cleanup result, permanent reciprocal-ID fingerprint result, read-only outcome, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.
+Record the date, Actual Server version, MCP version/commit, exact 62-tool inventory result, installed query/import/transfer/schedule/balance findings, bounded diagnostic and summary timings, split/transfer availability, payee/rule and budget-mode capability outcomes, schedule and controlled-summary cleanup, permanent fingerprint result, read-only/destructive-disabled/restart outcomes, explicitly authorized write outcome, and any sanitized diagnostic. Never record credentials or personal financial values.

@@ -79,6 +79,7 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
         }
         await registry.cleanup({
           transaction: async resource => { await client.deleteTransaction(resource.id); },
+          schedule: async resource => { await client.deleteSchedule(resource.id, true); },
           verifyTransactionsAbsent: async ids => {
             for (const id of ids) await expect(client.getTransaction(id)).rejects.toMatchObject({ code: 'NOT_FOUND' });
           },
@@ -171,6 +172,113 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
   it('performs an explicit sync and keeps the budget operational', async () => {
     await expect(client.sync()).resolves.toMatchObject({ success: true });
     await expect(client.health()).resolves.toMatchObject({ connected: true, budgetLoaded: true });
+  });
+
+  it('creates, lists, gets, updates, guards, and deletes an isolated schedule', async () => {
+    const runId = randomUUID();
+    const account = await client.createAccount(`MCP_INTEGRATION_SCHEDULE_ACCOUNT_${runId}`);
+    registry.register('account', account.account.id, account.account.name);
+    const payee = await client.createPayee(`MCP Integration Schedule Payee ${runId}`);
+    registry.register('payee', payee.payee.id, payee.payee.name);
+    const created = await client.createSchedule({
+      name: `MCP Integration Schedule ${runId}`,
+      accountId: account.account.id,
+      payeeId: payee.payee.id,
+      amount: { type: 'exact', amount: -1234 },
+      date: { type: 'oneTime', date: '2026-12-20' },
+      postsTransaction: false
+    });
+    registry.register('schedule', created.schedule.id, created.schedule.name ?? `schedule-${runId}`);
+    expect((await client.listSchedules({ accountId: account.account.id })).schedules.map(item => item.id)).toContain(created.schedule.id);
+    expect((await client.getSchedule(created.schedule.id)).schedule).toEqual(created.schedule);
+    const updated = await client.updateSchedule(created.schedule.id, {
+      name: `MCP Integration Schedule Updated ${runId}`,
+      amount: { type: 'approximate', amount: -1500 },
+      date: { type: 'recurring', frequency: 'monthly', start: '2026-12-21', interval: 1,
+        patterns: [{ type: 'day', value: 21 }], weekend: 'after', end: { type: 'afterOccurrences', occurrences: 3 } },
+      postsTransaction: true
+    });
+    expect(updated).toMatchObject({ changed: true, schedule: { id: created.schedule.id, name: `MCP Integration Schedule Updated ${runId}`, postsTransaction: true } });
+    await expect(client.deleteSchedule(created.schedule.id, false)).rejects.toMatchObject({ code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' });
+    const deleted = await client.deleteSchedule(created.schedule.id, true);
+    expect(deleted).toMatchObject({ deletedScheduleId: created.schedule.id, historicalTransactionsPreserved: true });
+    await expect(client.getSchedule(created.schedule.id)).rejects.toMatchObject({ code: 'SCHEDULE_NOT_FOUND' });
+    registry.release('schedule', created.schedule.id);
+    await client.deletePayee(payee.payee.id, true);
+    registry.release('payee', payee.payee.id);
+    await client.deleteAccount(account.account.id);
+    registry.release('account', account.account.id);
+  });
+
+  it('verifies controlled signed summary semantics across categories, splits, transfers, starting balance, and off-budget cash flow', async () => {
+    const runId = randomUUID();
+    const date = new Date().toISOString().slice(0, 10);
+    const onBudget = await client.createAccount(`MCP_SUMMARY_ON_${runId}`, false, 100);
+    const peer = await client.createAccount(`MCP_SUMMARY_PEER_${runId}`);
+    const offBudget = await client.createAccount(`MCP_SUMMARY_OFF_${runId}`, true);
+    for (const account of [onBudget, peer, offBudget]) registry.register('account', account.account.id, account.account.name);
+    const opening = (await client.getTransactions(onBudget.account.id, date, date)).find(item => item.starting_balance_flag === true);
+    expect(opening).toBeDefined();
+    registry.register('transaction', opening!.id, `summary-opening-${runId}`);
+
+    const expenseGroup = await client.createCategoryGroup(`MCP_SUMMARY_EXPENSE_GROUP_${runId}`);
+    const incomeGroup = await client.createCategoryGroup(`MCP_SUMMARY_INCOME_GROUP_${runId}`, true);
+    registry.register('categoryGroup', expenseGroup.categoryGroup.id, expenseGroup.categoryGroup.name);
+    registry.register('categoryGroup', incomeGroup.categoryGroup.id, incomeGroup.categoryGroup.name);
+    const expenseCategory = await client.createCategory(`MCP_SUMMARY_EXPENSE_${runId}`, expenseGroup.categoryGroup.id);
+    const incomeCategory = await client.createCategory(`MCP_SUMMARY_INCOME_${runId}`, incomeGroup.categoryGroup.id);
+    registry.register('category', expenseCategory.category.id, expenseCategory.category.name);
+    registry.register('category', incomeCategory.category.id, incomeCategory.category.name);
+    const payee = await client.createPayee(`MCP Summary Payee ${runId}`);
+    registry.register('payee', payee.payee.id, payee.payee.name);
+
+    const imported = await client.importTransactions(onBudget.account.id, [
+      { date, amount: 10000, imported_id: `summary-income:${runId}`, payee: payee.payee.id, category: incomeCategory.category.id },
+      { date, amount: -1000, imported_id: `summary-income-adjustment:${runId}`, payee: payee.payee.id, category: incomeCategory.category.id },
+      { date, amount: -5000, imported_id: `summary-expense:${runId}`, payee: payee.payee.id, category: expenseCategory.category.id },
+      { date, amount: 500, imported_id: `summary-refund:${runId}`, payee: payee.payee.id, category: expenseCategory.category.id },
+      { date, amount: 250, imported_id: `summary-uncat-in:${runId}` },
+      { date, amount: -200, imported_id: `summary-uncat-out:${runId}` }
+    ]);
+    expect(imported.errors).toEqual([]);
+    for (const id of imported.added) registry.register('transaction', id, `summary-import-${runId}`);
+    const offImported = await client.importTransactions(offBudget.account.id, [
+      { date, amount: 700, imported_id: `summary-off-in:${runId}` },
+      { date, amount: -300, imported_id: `summary-off-out:${runId}` }
+    ]);
+    expect(offImported.errors).toEqual([]);
+    for (const id of offImported.added) registry.register('transaction', id, `summary-offbudget-${runId}`);
+
+    const splitNote = `MCP_SUMMARY_SPLIT_${runId}`;
+    await actualApiAdapter.addTransactions(onBudget.account.id, [{
+      date, amount: -1000, payee: payee.payee.id, notes: splitNote,
+      subtransactions: [
+        { amount: -600, category: expenseCategory.category.id, notes: `${splitNote}_A` },
+        { amount: -400, category: expenseCategory.category.id, notes: `${splitNote}_B` }
+      ]
+    }], { runTransfers: true });
+    await client.sync();
+    const split = (await client.getTransactions(onBudget.account.id, date, date)).find(item => item.notes === splitNote && item.is_parent === true);
+    expect(split?.subtransactions).toHaveLength(2);
+    registry.register('transaction', split!.id, splitNote);
+
+    const transfer = await client.createTransfer({
+      fromAccountId: onBudget.account.id, toAccountId: peer.account.id, amount: 321, date, dryRun: false, confirmWrite: true
+    });
+    expect(transfer.pair?.integrity).toBe('VALID');
+    const transferIds = [transfer.pair!.transactionA!.id, transfer.pair!.transactionB!.id] as const;
+    registry.registerTransferPair(transfer.pair!.pairKey, transferIds, `summary-transfer-${runId}`);
+
+    const scope = { startDate: date, endDate: date, accountIds: [onBudget.account.id, peer.account.id, offBudget.account.id], includeOffbudget: true };
+    const month = await client.getMonthSummary(date.slice(0, 7), { accountIds: scope.accountIds, includeOffbudget: true });
+    expect(month.budget).toMatchObject({ available: false });
+    expect(month.ledger).toMatchObject({
+      incomeAmount: 9250, expenseAmount: -5700, netAmount: 3550,
+      transactionCount: 8, categorizedCount: 6, uncategorizedCount: 2,
+      offbudgetCashFlow: { inflowAmount: 700, outflowAmount: -300, netChange: 400, transactionCount: 2 }
+    });
+    expect(await client.getSpendingSummary(scope)).toMatchObject({ netExpenseAmount: -5700, transactionCount: 5, uncategorizedExpenseAmount: -200 });
+    expect(await client.getIncomeSummary(scope)).toMatchObject({ netIncomeAmount: 9250, transactionCount: 3, uncategorizedIncomeAmount: 250 });
   });
 
   it('deletes only the captured, UUID-owned transaction', async () => {

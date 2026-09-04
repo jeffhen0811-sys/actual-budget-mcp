@@ -144,3 +144,25 @@ The installed 26.8.1 implementation confirms these unsafe native behaviors:
 - `deleteCategory` may remap category relationships when a transfer category is supplied.
 
 The MCP layer therefore proves emptiness/unused state first, never supplies a category transfer for deletion, refuses empty-account close, and reopens a proven-empty closed account immediately before official deletion. If a future pinned build removes the unbounded transaction behavior, budget-month fields, or any required exported mutation, implementation must stop and report the missing public capability before changing the dependency or introducing another data path.
+
+## Schedule contract
+
+Official 26.8.1 declarations export exactly `getSchedules`, `createSchedule`, `updateSchedule`, and `deleteSchedule` for schedule administration. List returns `APIScheduleEntity[]`; create and update return the stable schedule ID; delete returns `void`. The package exports no public single-schedule getter, manual-post, skip-next-date, discovery, clock, or force-run method. Internal handlers with some of those names exist in the bundle but are not production dependencies.
+
+The installed external shape exposes optional name, account, payee, next-date, and completion state; required posting behavior, amount operator, and date; and optional amount. Date is either one `YYYY-MM-DD` string or `RecurConfig` using daily/weekly/monthly/yearly frequency, optional interval and monthly patterns, start, weekend movement, and never/count/date end fields. Amount operators are `is`, `isapprox`, and `isbetween`; between uses `{ num1, num2 }`. The bundle converts an omitted amount to zero, so MCP creation requires an explicit amount while preserving explicit zero.
+
+`next_date` and `completed` are system-managed and rejected by the installed update handler. Names are unique. Delete removes the linked rule and schedule in one internal batch, but does not delete already posted transactions. Successful SDK synchronization emits the event that may run Actual's schedule service and advance or post due schedules. MCP reads therefore remove rule IDs, raw conditions/actions, and unsupported advanced shapes; writes allow only stable fields and mark unsupported readable shapes non-writable.
+
+Sanitized contract fixtures cover one-time and recurring dates, exact/approximate/between amounts, null/absent references, next-date/completion, and legacy shapes. Controlled real-server evidence is required before transfer schedules can become supported; category assignment and manual posting remain unsupported.
+
+## Financial summary query contract
+
+Financial summaries use only MCP-owned fixed queries over the public `q`/`aqlQuery` surface. The compiler fixes `transactions`, inclusive dates, optional validated account/category/group IDs, transfer and starting-balance exclusion, `is_parent: false`, `splits: "inline"`, a 5,001 overflow sentinel, and deterministic ID ordering. Selected joins are limited to account off-budget state, category income/group metadata, and payee/category names. Returned envelopes are parsed as unknown and fail closed on malformed fields or unsafe amounts. Callers cannot provide a table, field, join, expression, operator, raw query, or ActualQL.
+
+Category income flags—not amount sign—drive categorized classification. Signed positive refunds reduce an expense aggregate, negative adjustments reduce an income aggregate, uncategorized on-budget values use sign, and off-budget values remain a separate cash-flow section. The complete on-budget month may additionally include the official `getBudgetMonth` result under a separate source label; filtered scopes never relabel those full-budget aggregates.
+
+## Runtime observability boundary
+
+The package exposes `getServerVersion`, while the MCP/package version and pinned SDK version come from local manifests. Connectivity can be actively probed, local budget-loaded state and cache lock are process-observable, and MCP-invoked sync attempts can record monotonic duration and sanitized outcomes in memory. The SDK exposes no reliable public last-sync timestamp covering all internal activity, no queue state, and no server-enforced receive-only mode. Complete cache paths, credentials, sync IDs, raw upstream errors, internal initial-sync timing, and schedule-service run history are therefore unavailable and are never inferred.
+
+`downloadBudget` performs a load/full-sync path, and the schedule service listens to sync events. `ACTUAL_MCP_READ_ONLY` consequently describes the MCP tool boundary: it blocks caller-invoked mutations and explicit sync, but cannot promise that SDK initialization or read-triggered initialization is mutation-free at the Actual runtime level.

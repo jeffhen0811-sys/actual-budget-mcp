@@ -12,6 +12,11 @@ export const MAX_TEXT_LENGTH = 10_000;
 export const MAX_ENTITY_NAME_LENGTH = 255;
 export const MAX_BUDGET_CATEGORY_RESULTS = 500;
 export const DEFAULT_BUDGET_CATEGORY_RESULTS = 100;
+export const DEFAULT_SCHEDULE_RESULTS = 100;
+export const MAX_SCHEDULE_RESULTS = 250;
+export const MAX_SCHEDULE_OFFSET = 10_000;
+export const DEFAULT_TOP_PAYEE_RESULTS = 10;
+export const MAX_TOP_PAYEE_RESULTS = 50;
 
 export const opaqueIdSchema = z
   .string('Identifier must be a string.')
@@ -32,7 +37,7 @@ export const entityNameSchema = z
 
 export const boundedTextSchema = z.string().max(MAX_TEXT_LENGTH, `Text must not exceed ${MAX_TEXT_LENGTH} characters.`);
 
-function isCalendarDate(value: string): boolean {
+export function isCalendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
   const date = new Date(Date.UTC(year!, month! - 1, day));

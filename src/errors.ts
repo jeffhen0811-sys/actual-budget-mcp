@@ -10,6 +10,12 @@ export type PublicErrorCode =
   | 'NOT_A_TRANSFER'
   | 'NAME_CONFLICT'
   | 'DESTRUCTIVE_CONFIRMATION_REQUIRED'
+  | 'READ_ONLY_MODE'
+  | 'DESTRUCTIVE_OPERATIONS_DISABLED'
+  | 'SCHEDULE_NOT_FOUND'
+  | 'INVALID_RECURRENCE'
+  | 'SCHEDULE_REFERENCE_INVALID'
+  | 'INVALID_SUMMARY_RANGE'
   | 'ACCOUNT_NOT_EMPTY'
   | 'CATEGORY_GROUP_NOT_EMPTY'
   | 'CATEGORY_IN_USE'
@@ -53,7 +59,7 @@ export type PublicErrorCode =
 export interface PublicErrorMetadata {
   details?: Record<string, unknown>;
   recoveryAction?: string;
-  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction' | 'payee' | 'rule' | 'budgetMonth'; id?: string; name?: string };
+  entity?: { type: 'account' | 'categoryGroup' | 'category' | 'transaction' | 'payee' | 'rule' | 'schedule' | 'budgetMonth'; id?: string; name?: string };
   state?: 'local_change_may_have_succeeded' | 'synchronized_but_unverified';
   partialState?: boolean;
 }

@@ -126,7 +126,16 @@ function fakeRuntime(): ToolRuntime {
       counts: { total: 1, changes: 1, set: 1, overwrite: 0, skip: 0, hiddenSkip: 0, incompatibleSkip: 0, unchanged: 0 },
       differences: [{ categoryId: 'c1', categoryName: 'Rent', groupId: 'g1', hidden: false, action: 'set', sourceBudgeted: 10000, targetBudgeted: 0, amountChange: true, carryoverChange: false }],
       omittedDifferenceCount: 0, attemptedCategoryIds: [], completedCategoryIds: []
-    })
+    }),
+    listSchedules: vi.fn().mockResolvedValue({ schedules: [], scope: {}, page: { limit: 100, offset: 0, returned: 0, total: 0 } }),
+    getSchedule: vi.fn().mockResolvedValue({ schedule: { id: 's1', accountId: 'a1', payeeId: null, amount: { type: 'exact', amount: -100 }, date: { type: 'oneTime', date: '2026-08-20' }, completed: false, postsTransaction: true, writable: true, unsupportedReasons: [] } }),
+    createSchedule: vi.fn().mockResolvedValue({ success: true, changed: true, schedule: { id: 's1', accountId: 'a1', payeeId: null, amount: { type: 'exact', amount: -100 }, date: { type: 'oneTime', date: '2026-08-20' }, completed: false, postsTransaction: true, writable: true, unsupportedReasons: [] } }),
+    updateSchedule: vi.fn().mockResolvedValue({ success: true, changed: false, changedFields: [], schedule: { id: 's1', accountId: 'a1', payeeId: null, amount: { type: 'exact', amount: -100 }, date: { type: 'oneTime', date: '2026-08-20' }, completed: false, postsTransaction: true, writable: true, unsupportedReasons: [] } }),
+    deleteSchedule: vi.fn().mockResolvedValue({ success: true, deletedScheduleId: 's1', deletedScheduleName: null, linkedTransactionIds: [], historicalTransactionsPreserved: true }),
+    getMonthSummary: vi.fn().mockResolvedValue({ month: '2026-08', ledger: { source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, incomeAmount: 0, expenseAmount: 0, netAmount: 0, transactionCount: 0, incomeTransactionCount: 0, expenseTransactionCount: 0, categorizedCount: 0, uncategorizedCount: 0, uncategorizedIncomeAmount: 0, uncategorizedExpenseAmount: 0, incomeCategoryBreakdown: [], expenseCategoryBreakdown: [], expenseGroupBreakdown: [], topIncomePayees: [], topExpensePayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }, budget: { available: true, source: 'official-getBudgetMonth', data: budgetMonthFixture } }),
+    getSpendingSummary: vi.fn().mockResolvedValue({ source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, netExpenseAmount: 0, transactionCount: 0, uncategorizedExpenseAmount: 0, categoryBreakdown: [], groupBreakdown: [], topPayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }),
+    getIncomeSummary: vi.fn().mockResolvedValue({ source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, netIncomeAmount: 0, transactionCount: 0, uncategorizedIncomeAmount: 0, categoryBreakdown: [], topPayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }),
+    runtimeStatus: vi.fn().mockResolvedValue({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true, server: 'http://actual.local:5006', uptimeMs: 1, modes: { readOnly: false, allowDestructive: true, effectiveWriteAllowed: true }, cache: { configured: true, locked: true }, queue: { queuedCount: 0 }, syncTelemetry: {}, telemetryScope: 'mcp-initiated-syncs-only', unavailableMetadata: ['initialFullSync', 'sdkInternalScheduleServiceRuns'] })
   };
 }
 
@@ -148,10 +157,10 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly fifty-three tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
+  it('registers exactly sixty-two tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
-    expect(tools).toHaveLength(53);
+    expect(tools).toHaveLength(62);
     expect(V040_TOOL_NAMES).toHaveLength(42);
     expect(V040_TOOL_NAMES.every(name => tools.some(tool => tool.name === name))).toBe(true);
     for (const tool of tools) {
@@ -268,6 +277,15 @@ describe('MCP server contract', () => {
       { name: 'actual_hold_budget_for_next_month', arguments: { month: '2026-08', amount: 1000 } },
       { name: 'actual_reset_budget_hold', arguments: { month: '2026-08' } },
       { name: 'actual_copy_budget_month', arguments: { sourceMonth: '2026-08', targetMonth: '2026-09' } }
+      ,{ name: 'actual_list_schedules', arguments: {} }
+      ,{ name: 'actual_get_schedule', arguments: { scheduleId: 's1' } }
+      ,{ name: 'actual_create_schedule', arguments: { accountId: 'a1', amount: { type: 'exact', amount: -100 }, date: { type: 'oneTime', date: '2026-08-20' }, postsTransaction: true } }
+      ,{ name: 'actual_update_schedule', arguments: { scheduleId: 's1', amount: { type: 'exact', amount: -100 } } }
+      ,{ name: 'actual_delete_schedule', arguments: { scheduleId: 's1', confirmDestructive: true } }
+      ,{ name: 'actual_get_month_summary', arguments: { month: '2026-08' } }
+      ,{ name: 'actual_get_spending_summary', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } }
+      ,{ name: 'actual_get_income_summary', arguments: { startDate: '2026-08-01', endDate: '2026-08-31' } }
+      ,{ name: 'actual_get_runtime_status', arguments: {} }
     ];
     for (const call of calls) {
       const result = await client.callTool(call);
@@ -411,5 +429,32 @@ describe('MCP server contract', () => {
     expect(result.isError).toBe(true);
     expect(JSON.stringify(result)).not.toContain(sentinel);
     expect(result.structuredContent).toMatchObject({ error: { code: 'INTERNAL_ERROR', operation: 'actual_sync' } });
+  });
+
+  it('enforces read-only and destructive-disabled policy before runtime handlers', async () => {
+    await client.close();
+    await server.close();
+    runtime = fakeRuntime();
+    let pair = InMemoryTransport.createLinkedPair();
+    server = createMcpServer(runtime, createLogger([], () => undefined), { readOnly: true, allowDestructive: false });
+    client = new Client({ name: 'policy-client', version: '1.0.0' });
+    await Promise.all([server.connect(pair[1]), client.connect(pair[0])]);
+    expect((await client.callTool({ name: 'actual_health', arguments: {} })).isError).not.toBe(true);
+    expect((await client.callTool({ name: 'actual_sync', arguments: {} })).structuredContent).toMatchObject({ error: { code: 'READ_ONLY_MODE' } });
+    expect((await client.callTool({ name: 'actual_delete_schedule', arguments: { scheduleId: 's1', confirmDestructive: true } })).structuredContent)
+      .toMatchObject({ error: { code: 'READ_ONLY_MODE' } });
+    expect(runtime.sync).not.toHaveBeenCalled();
+    expect(runtime.deleteSchedule).not.toHaveBeenCalled();
+
+    await client.close();
+    await server.close();
+    runtime = fakeRuntime();
+    pair = InMemoryTransport.createLinkedPair();
+    server = createMcpServer(runtime, createLogger([], () => undefined), { readOnly: false, allowDestructive: false });
+    client = new Client({ name: 'policy-client', version: '1.0.0' });
+    await Promise.all([server.connect(pair[1]), client.connect(pair[0])]);
+    expect((await client.callTool({ name: 'actual_delete_schedule', arguments: { scheduleId: 's1', confirmDestructive: true } })).structuredContent)
+      .toMatchObject({ error: { code: 'DESTRUCTIVE_OPERATIONS_DISABLED' } });
+    expect(runtime.deleteSchedule).not.toHaveBeenCalled();
   });
 });

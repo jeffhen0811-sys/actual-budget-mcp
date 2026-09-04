@@ -1,12 +1,20 @@
 import { open, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ActualConfig } from '../config.js';
-import { loadConfig, sanitizeServerUrl } from '../config.js';
+import type { OperationalConfig } from '../config.js';
+import { loadConfig, loadOperationalConfig, sanitizeServerUrl } from '../config.js';
 import { mapError, PublicError } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { createLogger } from '../logger.js';
 import { errorMessage, redact } from '../redaction.js';
-import { DEFAULT_BUDGET_CATEGORY_RESULTS, MAX_BUDGET_CATEGORY_RESULTS, MAX_TRANSACTION_RESULTS } from '../schemas.js';
+import {
+  DEFAULT_BUDGET_CATEGORY_RESULTS,
+  MAX_BUDGET_CATEGORY_RESULTS,
+  MAX_SCHEDULE_OFFSET,
+  MAX_SCHEDULE_RESULTS,
+  MAX_TRANSACTION_RESULTS
+} from '../schemas.js';
+import { ACTUAL_SDK_VERSION, MCP_VERSION } from '../version.js';
 import type {
   ActualApiAdapter,
   AdapterAccount,
@@ -15,6 +23,7 @@ import type {
   AdapterCategoryGroup,
   AdapterPayee,
   AdapterRule,
+  AdapterSchedule,
   AdapterTransaction,
   ImportTransaction
 } from './adapter.js';
@@ -80,6 +89,25 @@ import {
   type PublicRuleStage,
   type WritableRuleDraft
 } from './rules.js';
+import {
+  compileScheduleTransactions,
+  projectSchedule,
+  scheduleDraftToSdk,
+  scheduleMatches,
+  toSdkScheduleAmount,
+  toSdkScheduleDate,
+  type PublicSchedule,
+  type ScheduleDraft,
+  type ScheduleUpdate
+} from './schedules.js';
+import {
+  compileSummaryLedgerQuery,
+  normalizeSummaryScope,
+  parseSummaryRows,
+  summarizeLedger,
+  type LedgerSummary,
+  type SummaryScope
+} from './summaries.js';
 
 export interface PublicAccount {
   id: string;
@@ -130,6 +158,16 @@ export interface RuntimeHealth {
   budgetLoaded: boolean;
   version?: string;
   diagnosticCode?: string;
+  mcpVersion?: string;
+  sdkVersion?: string;
+  readOnlyMode?: boolean;
+}
+
+export interface SyncTelemetry {
+  lastSyncAttemptAt?: string;
+  lastSuccessfulSyncAt?: string;
+  lastSyncDurationMs?: number;
+  lastSyncErrorCode?: string;
 }
 
 export class ActualClient {
@@ -139,12 +177,17 @@ export class ActualClient {
   private ready = false;
   private lockPath: string | undefined;
   private shutdownPromise: Promise<void> | undefined;
+  private readonly startedAt = Date.now();
+  private readonly syncTelemetry: SyncTelemetry = {};
 
   constructor(
     private readonly api: ActualApiAdapter,
     private readonly configLoader: () => Promise<ActualConfig> = () => loadConfig(),
-    private readonly logger: Logger = createLogger()
+    private readonly logger: Logger = createLogger(),
+    private readonly operationalConfig: OperationalConfig = loadOperationalConfig()
   ) {}
+
+  getOperationalPolicy(): OperationalConfig { return { ...this.operationalConfig }; }
 
   private secrets(): Array<string | undefined> {
     return [this.config?.password, this.config?.encryptionPassword];
@@ -206,7 +249,7 @@ export class ActualClient {
   }
 
   private run<T>(operation: string, action: () => Promise<T>): Promise<T> {
-    return this.queue.run(async () => {
+    return this.queue.run(operation, async () => {
       try {
         await this.ensureReady();
         return await action();
@@ -226,14 +269,20 @@ export class ActualClient {
             connected: true,
             server: sanitizeServerUrl(this.config!.serverUrl),
             budgetLoaded: this.ready,
-            version: status.version
+            version: status.version,
+            mcpVersion: MCP_VERSION,
+            sdkVersion: ACTUAL_SDK_VERSION,
+            readOnlyMode: this.operationalConfig.readOnly
           };
         }
         return {
           connected: false,
           server: sanitizeServerUrl(this.config!.serverUrl),
           budgetLoaded: this.ready,
-          diagnosticCode: status.error ?? 'SERVER_UNAVAILABLE'
+          diagnosticCode: status.error ?? 'SERVER_UNAVAILABLE',
+          mcpVersion: MCP_VERSION,
+          sdkVersion: ACTUAL_SDK_VERSION,
+          readOnlyMode: this.operationalConfig.readOnly
         };
       } catch (error) {
         const mapped = mapError(error, 'actual_health', this.secrets());
@@ -241,16 +290,73 @@ export class ActualClient {
           connected: false,
           server: this.config ? sanitizeServerUrl(this.config.serverUrl) : '[not-configured]',
           budgetLoaded: this.ready,
-          diagnosticCode: mapped.code
+          diagnosticCode: mapped.code,
+          mcpVersion: MCP_VERSION,
+          sdkVersion: ACTUAL_SDK_VERSION,
+          readOnlyMode: this.operationalConfig.readOnly
         };
       }
     });
   }
 
-  sync(): Promise<{ success: true; synchronizedAt: string }> {
-    return this.run('actual_sync', async () => {
+  private async observeSync(): Promise<{ completedAt: string; durationMs: number }> {
+    const attemptedAt = new Date().toISOString();
+    const started = performance.now();
+    this.syncTelemetry.lastSyncAttemptAt = attemptedAt;
+    try {
       await this.api.sync();
-      return { success: true, synchronizedAt: new Date().toISOString() };
+      const completedAt = new Date().toISOString();
+      const durationMs = Math.max(0, performance.now() - started);
+      this.syncTelemetry.lastSuccessfulSyncAt = completedAt;
+      this.syncTelemetry.lastSyncDurationMs = durationMs;
+      delete this.syncTelemetry.lastSyncErrorCode;
+      return { completedAt, durationMs };
+    } catch (error) {
+      this.syncTelemetry.lastSyncDurationMs = Math.max(0, performance.now() - started);
+      this.syncTelemetry.lastSyncErrorCode = mapError(error, 'actual_sync', this.secrets()).code;
+      throw error;
+    }
+  }
+
+  sync(): Promise<{ success: true; synchronizedAt: string; completedAt: string; durationMs: number }> {
+    return this.run('actual_sync', async () => {
+      const observed = await this.observeSync();
+      return { success: true, synchronizedAt: observed.completedAt, ...observed };
+    });
+  }
+
+  runtimeStatus() {
+    const queueAtRequest = this.queue.snapshot();
+    return this.queue.run(async () => {
+      let connected = false;
+      let diagnosticCode: string | undefined;
+      try {
+        await this.ensureReady();
+        const status = await this.api.getServerVersion();
+        connected = 'version' in status && typeof status.version === 'string';
+        if (!connected) diagnosticCode = 'error' in status ? status.error : 'SERVER_UNAVAILABLE';
+      } catch (error) {
+        diagnosticCode = mapError(error, 'actual_get_runtime_status', this.secrets()).code;
+      }
+      return {
+        mcpVersion: MCP_VERSION,
+        sdkVersion: ACTUAL_SDK_VERSION,
+        connected,
+        budgetLoaded: this.ready,
+        server: this.config ? sanitizeServerUrl(this.config.serverUrl) : '[not-configured]',
+        uptimeMs: Math.max(0, Date.now() - this.startedAt),
+        modes: {
+          readOnly: this.operationalConfig.readOnly,
+          allowDestructive: this.operationalConfig.allowDestructive,
+          effectiveWriteAllowed: !this.operationalConfig.readOnly
+        },
+        cache: { configured: this.config !== undefined, locked: this.lockPath !== undefined },
+        queue: queueAtRequest,
+        syncTelemetry: { ...this.syncTelemetry },
+        telemetryScope: 'mcp-initiated-syncs-only' as const,
+        unavailableMetadata: ['initialFullSync', 'sdkInternalScheduleServiceRuns'] as const,
+        ...(diagnosticCode === undefined ? {} : { diagnosticCode })
+      };
     });
   }
 
@@ -429,7 +535,7 @@ export class ActualClient {
     verify: () => Promise<T>
   ): Promise<T> {
     try {
-      await this.api.sync();
+      await this.observeSync();
     } catch (error) {
       throw new PublicError('MUTATION_SYNC_FAILED', 'The budget change may have succeeded locally, but synchronization failed. Run actual_sync and read the affected month before another mutation.', operation, false, {
         recoveryAction: 'actual_sync', entity, state: 'local_change_may_have_succeeded', partialState: true
@@ -656,12 +762,12 @@ export class ActualClient {
           if (item.carryoverChange && item.sourceCarryover !== undefined) await this.api.setBudgetCarryover(targetMonth, item.categoryId, item.sourceCarryover);
           completedCategoryIds.push(item.categoryId);
         } catch (error) {
-          try { await this.api.sync(); }
+          try { await this.observeSync(); }
           catch (syncError) { throw partialError('Budget copy stopped during local execution and synchronization also failed.', 'local_change_may_have_succeeded', item.categoryId, syncError); }
           throw partialError('Budget copy stopped during local execution after synchronization; inspect the target month before recovery.', 'synchronized_but_unverified', item.categoryId, error);
         }
       }
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) { throw partialError('Budget copy local changes may have succeeded, but synchronization failed.', 'local_change_may_have_succeeded', undefined, error); }
       try {
         const persisted = await this.projectedBudgetMonth(targetMonth, operation, months);
@@ -885,7 +991,7 @@ export class ActualClient {
           if (side.cleared !== desired.cleared) await this.api.updateTransaction(side.id, { cleared: desired.cleared });
         }
         phase = 'side_updates_applied';
-        await this.api.sync();
+        await this.observeSync();
         phase = 'synchronized';
         const persisted = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(knownIds)), operation);
         if (persisted.length !== 2) throw new Error('Created transfer could not be read back after synchronization.');
@@ -1111,7 +1217,7 @@ export class ActualClient {
           }
         } catch (error) {
           if (completedIds.length) {
-            try { await this.api.sync(); }
+            try { await this.observeSync(); }
             catch (syncError) { throw partialError('Bulk updates stopped locally and synchronization also failed.', 'sync', 'local_change_may_have_succeeded', syncError); }
             throw partialError('Bulk updates stopped after a partial local sequence; completed changes were synchronized but require exact reads.', 'local_update', 'synchronized_but_unverified', error);
           }
@@ -1120,7 +1226,7 @@ export class ActualClient {
           }, { cause: error });
         }
       }
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) { throw partialError('Bulk local changes may have succeeded, but synchronization failed.', 'sync', 'local_change_may_have_succeeded', error); }
 
       let persisted: AdapterTransaction[];
@@ -1163,7 +1269,7 @@ export class ActualClient {
     return this.run(operation, async () => {
       const result = await mutation();
       try {
-        await this.api.sync();
+        await this.observeSync();
       } catch (error) {
         this.logger.error('Synchronization failed after a local mutation.', { operation });
         throw new PublicError(
@@ -1205,7 +1311,7 @@ export class ActualClient {
         ...request.options,
         dryRun: false
       }), operation);
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) {
         throw new PublicError(
           'MUTATION_SYNC_FAILED',
@@ -1293,7 +1399,7 @@ export class ActualClient {
       if (Array.isArray(updated) && updated.length === 0) {
         throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
       }
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) { throw new PublicError(
         'MUTATION_SYNC_FAILED', 'The local change succeeded, but synchronization failed. Run actual_sync before retrying the mutation.', operation, false,
         { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true }, { cause: error }
@@ -1348,7 +1454,7 @@ export class ActualClient {
       if (Array.isArray(deleted) && deleted.length === 0) {
         throw new PublicError('NOT_FOUND', 'The requested transaction was not found.', operation, false);
       }
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) { throw new PublicError(
         'MUTATION_SYNC_FAILED', 'The local deletion may have succeeded, but synchronization failed.', operation, false,
         { recoveryAction: 'actual_sync_then_exact_read', state: 'local_change_may_have_succeeded', partialState: true, details: { affectedTransactionIds } }, { cause: error }
@@ -1361,7 +1467,7 @@ export class ActualClient {
       ); }
       if (counterpartId && remaining.some(row => affectedTransactionIds.includes(row.id))) {
         try {
-          await this.api.sync();
+          await this.observeSync();
           remaining = parseAqlRows(await this.api.aqlQuery(compileTransactionsByIds(affectedTransactionIds)), operation);
         } catch (error) {
           throw new PublicError(
@@ -1460,7 +1566,7 @@ export class ActualClient {
     return normalized;
   }
 
-  private mutationError(operation: string, error: unknown, entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule'; id?: string; name?: string }): never {
+  private mutationError(operation: string, error: unknown, entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule' | 'schedule'; id?: string; name?: string }): never {
     if (error instanceof PublicError) throw error;
     const lower = errorMessage(error).toLowerCase();
     if (lower.includes('already exists') || lower.includes('unique constraint') || lower.includes('duplicate')) {
@@ -1471,11 +1577,11 @@ export class ActualClient {
 
   private async synchronizeAndVerify<T>(
     operation: string,
-    entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule'; id?: string; name?: string },
+    entity: { type: 'account' | 'categoryGroup' | 'category' | 'payee' | 'rule' | 'schedule'; id?: string; name?: string },
     verify: () => Promise<T>
   ): Promise<T> {
     try {
-      await this.api.sync();
+      await this.observeSync();
     } catch (error) {
       this.logger.error('Synchronization failed after a local structural mutation.', { operation, entityType: entity.type, entityId: entity.id });
       throw new PublicError(
@@ -2097,7 +2203,7 @@ export class ActualClient {
       );
       try { await this.api.mergePayees(targetPayeeId, sourcePayeeIds); }
       catch (error) { throw partialFailure('The payee merge may have partially changed local state. Synchronize and inspect all named payees before another merge.', error); }
-      try { await this.api.sync(); }
+      try { await this.observeSync(); }
       catch (error) { throw partialFailure('The payee merge may have succeeded locally but synchronization failed. Run actual_sync and inspect all named payees.', error); }
       try {
         const persistedPayees = await this.completePayees(operation);
@@ -2308,6 +2414,232 @@ export class ActualClient {
         if ((await this.completeRules(operation)).some(rule => rule.id === ruleId)) throw new Error('Rule remained present.');
       });
       return { success: true as const, deletedRuleId: ruleId };
+    });
+  }
+
+  private async completeSchedules(operation: string): Promise<AdapterSchedule[]> {
+    try {
+      const schedules = await this.api.getSchedules();
+      if (!Array.isArray(schedules)) throw new Error('Schedule list was not an array.');
+      schedules.forEach(projectSchedule);
+      return schedules;
+    } catch (error) {
+      if (error instanceof PublicError) throw error;
+      throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The complete Actual schedule list could not be verified.', operation, false, undefined, { cause: error });
+    }
+  }
+
+  private requireSchedule(schedules: readonly AdapterSchedule[], scheduleId: string, operation: string): AdapterSchedule {
+    const schedule = schedules.find(item => item.id === scheduleId);
+    if (!schedule) throw new PublicError('SCHEDULE_NOT_FOUND', 'The requested schedule was not found.', operation, false, {
+      entity: { type: 'schedule', id: scheduleId }
+    });
+    return schedule;
+  }
+
+  listSchedules(filters: { accountId?: string; completed?: boolean; limit?: number; offset?: number } = {}) {
+    const operation = 'actual_list_schedules';
+    return this.run(operation, async () => {
+      const limit = filters.limit ?? 100;
+      const offset = filters.offset ?? 0;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SCHEDULE_RESULTS ||
+          !Number.isSafeInteger(offset) || offset < 0 || offset > MAX_SCHEDULE_OFFSET) {
+        throw new PublicError('CONFIGURATION_ERROR', 'Schedule pagination is outside the supported bounds.', operation, false);
+      }
+      const projected = (await this.completeSchedules(operation)).map(projectSchedule).filter(schedule =>
+        (filters.accountId === undefined || schedule.accountId === filters.accountId) &&
+        (filters.completed === undefined || schedule.completed === filters.completed)
+      );
+      return {
+        schedules: projected.slice(offset, offset + limit),
+        scope: {
+          ...(filters.accountId === undefined ? {} : { accountId: filters.accountId }),
+          ...(filters.completed === undefined ? {} : { completed: filters.completed })
+        },
+        page: { limit, offset, returned: Math.min(limit, Math.max(0, projected.length - offset)), total: projected.length }
+      };
+    });
+  }
+
+  getSchedule(scheduleId: string): Promise<{ schedule: PublicSchedule }> {
+    const operation = 'actual_get_schedule';
+    return this.run(operation, async () => ({ schedule: projectSchedule(this.requireSchedule(await this.completeSchedules(operation), scheduleId, operation)) }));
+  }
+
+  private async validateScheduleReferences(accountId: string, payeeId: string | null | undefined, operation: string): Promise<void> {
+    const accounts = await this.api.getAccounts();
+    const account = accounts.find(item => item.id === accountId);
+    if (!account || account.closed === true) throw new PublicError('SCHEDULE_REFERENCE_INVALID', 'Schedule account must exist and be open.', operation, false, {
+      entity: { type: 'account', id: accountId }
+    });
+    if (payeeId !== undefined && payeeId !== null) {
+      const payees = await this.api.getPayees();
+      const payee = payees.find(item => item.id === payeeId);
+      if (!payee || (typeof payee.transfer_acct === 'string' && payee.transfer_acct.length > 0)) {
+        throw new PublicError('SCHEDULE_REFERENCE_INVALID', 'Schedule payee must be an existing ordinary payee; transfer schedules are unsupported.', operation, false, {
+          entity: { type: 'payee', id: payeeId }
+        });
+      }
+    }
+  }
+
+  createSchedule(draft: ScheduleDraft) {
+    const operation = 'actual_create_schedule';
+    return this.run(operation, async () => {
+      await this.validateScheduleReferences(draft.accountId, draft.payeeId, operation);
+      const before = await this.completeSchedules(operation);
+      if (draft.name !== undefined && before.some(item => item.name === draft.name)) throw new PublicError(
+        'NAME_CONFLICT', 'A schedule with the requested name already exists.', operation, false, { entity: { type: 'schedule', name: draft.name } }
+      );
+      let id: string;
+      try { id = await this.api.createSchedule(scheduleDraftToSdk(draft)); }
+      catch (error) { this.mutationError(operation, error, { type: 'schedule', ...(draft.name === undefined ? {} : { name: draft.name }) }); }
+      if (typeof id! !== 'string' || id!.length === 0) throw new PublicError('MUTATION_FAILED', 'Actual did not return the created schedule ID.', operation, false);
+      const schedule = await this.synchronizeAndVerify(operation, { type: 'schedule', id: id!, ...(draft.name === undefined ? {} : { name: draft.name }) }, async () => {
+        const projected = projectSchedule(this.requireSchedule(await this.completeSchedules(operation), id!, operation));
+        if (!projected.writable || !scheduleMatches(projected, draft)) throw new Error('Created schedule did not match the desired state.');
+        return projected;
+      });
+      return { success: true as const, changed: true, schedule };
+    });
+  }
+
+  updateSchedule(scheduleId: string, fields: ScheduleUpdate) {
+    const operation = 'actual_update_schedule';
+    return this.run(operation, async () => {
+      const requestedFields = Object.keys(fields) as Array<keyof ScheduleUpdate>;
+      if (requestedFields.length === 0) throw new PublicError('CONFIGURATION_ERROR', 'Schedule update requires at least one supported field.', operation, false, {
+        entity: { type: 'schedule', id: scheduleId }
+      });
+      const current = projectSchedule(this.requireSchedule(await this.completeSchedules(operation), scheduleId, operation));
+      if (!current.writable) throw new PublicError('INVALID_RECURRENCE', 'This schedule uses a readable but unsupported shape and cannot be updated safely.', operation, false, {
+        entity: { type: 'schedule', id: scheduleId }, details: { unsupportedReasons: current.unsupportedReasons }
+      });
+      await this.validateScheduleReferences(fields.accountId ?? current.accountId!, fields.payeeId === undefined ? current.payeeId : fields.payeeId, operation);
+      const changedFields = requestedFields.filter(field => !scheduleMatches(current, { [field]: fields[field] }));
+      if (changedFields.length === 0) return { success: true as const, changed: false, changedFields: [], schedule: current };
+      if (changedFields.includes('name') && fields.name !== undefined) {
+        const schedules = await this.completeSchedules(operation);
+        if (schedules.some(item => item.id !== scheduleId && item.name === fields.name)) throw new PublicError(
+          'NAME_CONFLICT', 'A schedule with the requested name already exists.', operation, false, { entity: { type: 'schedule', id: scheduleId, name: fields.name } }
+        );
+      }
+      const sdkFields: Partial<AdapterSchedule> = {
+        ...(!changedFields.includes('name') ? {} : { name: fields.name }),
+        ...(!changedFields.includes('accountId') ? {} : { account: fields.accountId }),
+        ...(!changedFields.includes('payeeId') ? {} : { payee: fields.payeeId }),
+        ...(!changedFields.includes('postsTransaction') ? {} : { posts_transaction: fields.postsTransaction }),
+        ...(!changedFields.includes('amount') ? {} : toSdkScheduleAmount(fields.amount!)),
+        ...(!changedFields.includes('date') ? {} : { date: toSdkScheduleDate(fields.date!) })
+      };
+      try { await this.api.updateSchedule(scheduleId, sdkFields, changedFields.includes('date')); }
+      catch (error) { this.mutationError(operation, error, { type: 'schedule', id: scheduleId, ...(current.name === undefined ? {} : { name: current.name }) }); }
+      const desiredName = fields.name ?? current.name;
+      const schedule = await this.synchronizeAndVerify(operation, { type: 'schedule', id: scheduleId, ...(desiredName === undefined ? {} : { name: desiredName }) }, async () => {
+        const projected = projectSchedule(this.requireSchedule(await this.completeSchedules(operation), scheduleId, operation));
+        if (!projected.writable || !scheduleMatches(projected, fields)) throw new Error('Updated schedule did not match the desired state.');
+        return projected;
+      });
+      return { success: true as const, changed: true, changedFields, schedule };
+    });
+  }
+
+  private async linkedScheduleTransactionIds(scheduleId: string, operation: string): Promise<string[]> {
+    const value = await this.api.aqlQuery(compileScheduleTransactions(scheduleId));
+    if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray((value as { data?: unknown }).data)) {
+      throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an unsupported linked-transaction query shape.', operation, false);
+    }
+    const rows = (value as { data: unknown[] }).data;
+    if (rows.length > 5000 || rows.some(row => !row || typeof row !== 'object' || typeof (row as { id?: unknown }).id !== 'string')) {
+      throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned invalid linked schedule transaction evidence.', operation, false);
+    }
+    return rows.map(row => (row as { id: string }).id).sort();
+  }
+
+  deleteSchedule(scheduleId: string, confirmDestructive: boolean) {
+    const operation = 'actual_delete_schedule';
+    return this.run(operation, async () => {
+      const current = projectSchedule(this.requireSchedule(await this.completeSchedules(operation), scheduleId, operation));
+      const linkedTransactionIds = await this.linkedScheduleTransactionIds(scheduleId, operation);
+      if (!confirmDestructive) throw new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Set confirmDestructive to true only after reviewing the schedule deletion preflight.', operation, false, {
+        entity: { type: 'schedule', id: scheduleId, ...(current.name === undefined ? {} : { name: current.name }) }, details: { linkedTransactionCount: linkedTransactionIds.length }
+      });
+      try { await this.api.deleteSchedule(scheduleId); }
+      catch (error) { this.mutationError(operation, error, { type: 'schedule', id: scheduleId, ...(current.name === undefined ? {} : { name: current.name }) }); }
+      await this.synchronizeAndVerify(operation, { type: 'schedule', id: scheduleId, ...(current.name === undefined ? {} : { name: current.name }) }, async () => {
+        if ((await this.completeSchedules(operation)).some(item => item.id === scheduleId)) throw new Error('Deleted schedule remained present.');
+        const after = await this.linkedScheduleTransactionIds(scheduleId, operation);
+        if (linkedTransactionIds.some(id => !after.includes(id))) throw new Error('A linked historical transaction was not preserved.');
+      });
+      return { success: true as const, deletedScheduleId: scheduleId, deletedScheduleName: current.name ?? null, linkedTransactionIds, historicalTransactionsPreserved: true as const };
+    });
+  }
+
+  private async executeSummary(scopeInput: SummaryScope, operation: string): Promise<LedgerSummary> {
+    const scope = normalizeSummaryScope(scopeInput);
+    const accounts = await this.api.getAccounts();
+    if (!Array.isArray(accounts)) throw new PublicError('PREFLIGHT_INCONCLUSIVE', 'The account scope could not be verified.', operation, false);
+    const requested = scope.accountIds ?? accounts.map(account => account.id);
+    if (requested.some(id => !accounts.some(account => account.id === id))) throw new PublicError('INVALID_REFERENCE', 'A requested summary account was not found.', operation, false);
+    if (!scope.includeOffbudget && requested.some(id => accounts.find(account => account.id === id)?.offbudget === true)) {
+      throw new PublicError('INCOMPATIBLE_FILTERS', 'Off-budget accounts require includeOffbudget=true.', operation, false);
+    }
+    const appliedAccountIds = requested.filter(id => scope.includeOffbudget || accounts.find(account => account.id === id)?.offbudget !== true);
+    if (scope.categoryIds?.length || scope.categoryGroupIds?.length) {
+      const categories = await this.api.getCategories();
+      if (scope.categoryIds?.some(id => !categories.some(category => category.id === id)) ||
+          scope.categoryGroupIds?.some(id => !categories.some(category => category.group_id === id))) {
+        throw new PublicError('INVALID_REFERENCE', 'A requested summary category or group was not found.', operation, false);
+      }
+    }
+    const queryScope = { ...scope, accountIds: scope.includeOffbudget ? requested : appliedAccountIds };
+    const rows = parseSummaryRows(await this.api.aqlQuery(compileSummaryLedgerQuery(queryScope)), operation);
+    return summarizeLedger(rows, queryScope, appliedAccountIds);
+  }
+
+  getMonthSummary(month: string, options: Omit<SummaryScope, 'startDate' | 'endDate'> = {}) {
+    const operation = 'actual_get_month_summary';
+    return this.run(operation, async () => {
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new PublicError('INVALID_SUMMARY_RANGE', 'Month must use valid YYYY-MM form.', operation, false);
+      const startDate = `${month}-01`;
+      const next = new Date(Date.UTC(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0));
+      const endDate = next.toISOString().slice(0, 10);
+      const ledger = await this.executeSummary({ ...options, startDate, endDate }, operation);
+      const compatibleBudgetScope = options.accountIds === undefined && options.includeOffbudget !== true && options.categoryIds === undefined && options.categoryGroupIds === undefined;
+      return {
+        month,
+        ledger,
+        budget: compatibleBudgetScope
+          ? { available: true as const, source: 'official-getBudgetMonth' as const, data: await this.projectedBudgetMonth(month, operation) }
+          : { available: false as const, reason: 'Budget month aggregates apply only to the complete on-budget scope.' }
+      };
+    });
+  }
+
+  getSpendingSummary(scope: SummaryScope) {
+    const operation = 'actual_get_spending_summary';
+    return this.run(operation, async () => {
+      const ledger = await this.executeSummary(scope, operation);
+      return {
+        source: ledger.source, scope: ledger.scope, netExpenseAmount: ledger.expenseAmount,
+        transactionCount: ledger.expenseTransactionCount, uncategorizedExpenseAmount: ledger.uncategorizedExpenseAmount,
+        categoryBreakdown: ledger.expenseCategoryBreakdown, groupBreakdown: ledger.expenseGroupBreakdown,
+        topPayees: ledger.topExpensePayees, topPayeeLimit: ledger.topPayeeLimit,
+        ...(ledger.offbudgetCashFlow === undefined ? {} : { offbudgetCashFlow: ledger.offbudgetCashFlow }), exclusions: ledger.exclusions
+      };
+    });
+  }
+
+  getIncomeSummary(scope: SummaryScope) {
+    const operation = 'actual_get_income_summary';
+    return this.run(operation, async () => {
+      const ledger = await this.executeSummary(scope, operation);
+      return {
+        source: ledger.source, scope: ledger.scope, netIncomeAmount: ledger.incomeAmount,
+        transactionCount: ledger.incomeTransactionCount, uncategorizedIncomeAmount: ledger.uncategorizedIncomeAmount,
+        categoryBreakdown: ledger.incomeCategoryBreakdown, topPayees: ledger.topIncomePayees, topPayeeLimit: ledger.topPayeeLimit,
+        ...(ledger.offbudgetCashFlow === undefined ? {} : { offbudgetCashFlow: ledger.offbudgetCashFlow }), exclusions: ledger.exclusions
+      };
     });
   }
 

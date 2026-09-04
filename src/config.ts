@@ -11,12 +11,36 @@ const environmentSchema = z
   })
   .strict();
 
+const explicitBoolean = (name: string, fallback: boolean) => z
+  .enum(['true', 'false'], { error: `${name} must be either true or false.` })
+  .optional()
+  .transform(value => value === undefined ? fallback : value === 'true');
+
+const operationalEnvironmentSchema = z.object({
+  ACTUAL_MCP_READ_ONLY: explicitBoolean('ACTUAL_MCP_READ_ONLY', false),
+  ACTUAL_MCP_ALLOW_DESTRUCTIVE: explicitBoolean('ACTUAL_MCP_ALLOW_DESTRUCTIVE', true)
+}).strict();
+
 export interface ActualConfig {
   serverUrl: string;
   password: string;
   syncId: string;
   encryptionPassword?: string;
   dataDir: string;
+}
+
+export interface OperationalConfig {
+  readOnly: boolean;
+  allowDestructive: boolean;
+}
+
+/** Parse non-secret MCP policy without touching Actual credentials or the cache. */
+export function loadOperationalConfig(env: NodeJS.ProcessEnv = process.env): OperationalConfig {
+  const parsed = operationalEnvironmentSchema.parse({
+    ACTUAL_MCP_READ_ONLY: env.ACTUAL_MCP_READ_ONLY,
+    ACTUAL_MCP_ALLOW_DESTRUCTIVE: env.ACTUAL_MCP_ALLOW_DESTRUCTIVE
+  });
+  return { readOnly: parsed.ACTUAL_MCP_READ_ONLY, allowDestructive: parsed.ACTUAL_MCP_ALLOW_DESTRUCTIVE };
 }
 
 export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<ActualConfig> {

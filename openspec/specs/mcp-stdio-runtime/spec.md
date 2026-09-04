@@ -3,19 +3,21 @@
 ## Purpose
 
 Define a protocol-safe MCP stdio surface with discoverable tools, validated inputs, structured outputs, behavioral annotations, and consistently sanitized diagnostics.
-
 ## Requirements
-
 ### Requirement: MCP tool surface
-The server SHALL register exactly 53 tools at startup: all 46 v0.5.0 tools plus `actual_list_transfer_payees`, `actual_get_transfer`, `actual_search_transfers`, `actual_create_transfer`, `actual_find_possible_transfers`, `actual_find_possible_duplicates`, and `actual_get_account_reconciliation`. The existing `actual_import_transactions`, `actual_preview_import`, `actual_search_transactions`, `actual_update_transaction`, `actual_bulk_update_transactions`, and `actual_delete_transaction` SHALL be enhanced additively rather than replaced or aliased. The server MUST NOT register raw search-by-field aliases, bulk field-specific aliases, `actual_run_query`, `actual_actualql`, `actual_raw_query`, a generic CRUD/query tool, internal transfer or reconciliation handlers, or an alias for any named operation.
+The server SHALL register exactly 62 tools at startup: all 53 v0.6.0 tools plus `actual_list_schedules`, `actual_get_schedule`, `actual_create_schedule`, `actual_update_schedule`, `actual_delete_schedule`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary`, and `actual_get_runtime_status`. Existing tools SHALL be enhanced only through backwards-compatible optional metadata where this change explicitly permits it. The server MUST NOT register raw ActualQL, raw schedule conditions, manual schedule posting, external cron, alert or notification engines, generic CRUD/query tools, internal handlers, or aliases added only to satisfy inventory counts.
+
+#### Scenario: Client lists v0.7.0 tools
+- **WHEN** a compatible MCP client requests the tool list
+- **THEN** all 62 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
 
 #### Scenario: Client lists v0.6.0 tools
 - **WHEN** a compatible MCP client requests the tool list
 - **THEN** all 53 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
 
 #### Scenario: No unsupported or artificial aliases
-- **WHEN** the v0.6.0 tool surface is inspected
-- **THEN** it contains no public ActualQL, raw query, field-specific search, field-specific bulk, generic CRUD/query, internal API, relationship mutation, or artificial inventory alias
+- **WHEN** the v0.7.0 tool surface is inspected
+- **THEN** it contains no raw query, raw recurrence, manual posting, internal API, generic CRUD/query, or artificial inventory alias
 
 ### Requirement: Standard stdio transport
 The server SHALL communicate with clients through MCP stdio. Stdout MUST contain only protocol frames, while application and SDK diagnostics MUST be written to stderr.
@@ -58,11 +60,19 @@ The server SHALL provide all tool titles, tool descriptions, schema descriptions
 - **THEN** the stored value is returned verbatim without translation or reinterpretation
 
 ### Requirement: Tool behavioral annotations
-`actual_get_transaction`, `actual_search_transactions`, `actual_preview_import`, `actual_list_transfer_payees`, `actual_get_transfer`, `actual_search_transfers`, `actual_find_possible_transfers`, `actual_find_possible_duplicates`, and `actual_get_account_reconciliation` SHALL declare read-only, non-destructive, idempotent behavior. `actual_bulk_update_transactions` SHALL declare mutation-capable, non-destructive, idempotent behavior because MCP annotations are static even though dry-run is the default. `actual_create_transfer` SHALL declare mutation-capable, non-destructive, non-idempotent behavior because a confirmed call creates financial transactions. Mutation-capable tool titles, descriptions, and schemas SHALL make default dry-run or explicit confirmation behavior clear. All 42 v0.4.0 annotations SHALL remain compatible, and annotations MUST NOT replace validation, preflight, protection, or confirmation.
+All read tools, including schedule list/detail, the three financial summaries, runtime status, health, and existing diagnostic and preview reads, SHALL declare read-only, non-destructive, idempotent behavior. Schedule creation and update SHALL declare mutation-capable, non-destructive behavior; schedule creation SHALL be non-idempotent and schedule update SHALL use the conservative idempotency indicated by its verified desired-state contract. Schedule deletion and every existing destructive tool SHALL declare mutation-capable and destructive behavior. The authoritative tool capability registry SHALL derive these annotations and runtime guards together. Annotations MUST NOT replace input validation, centralized operational policy, preflight, protection, synchronization, read-back, or per-call confirmation.
+
+#### Scenario: v0.7.0 tool metadata inspection
+- **WHEN** a client inspects the 62-tool list
+- **THEN** all read, write, and destructive hints match the authoritative capability registry and documented retry semantics
 
 #### Scenario: v0.6.0 tool metadata inspection
 - **WHEN** a client inspects the 53-tool list
 - **THEN** lookup, search, preview, bulk, transfer, diagnostics, reconciliation, and existing tool hints match their documented behavior and retry semantics
+
+#### Scenario: Guard and annotation consistency
+- **WHEN** the tool registry is tested
+- **THEN** no tool's annotation can classify it as read-only while the runtime policy classifies it as write or destructive
 
 #### Scenario: Bulk dry-run metadata
 - **WHEN** a client inspects or invokes bulk update in dry-run mode
@@ -72,19 +82,23 @@ The server SHALL provide all tool titles, tool descriptions, schema descriptions
 - **WHEN** a client inspects or invokes transfer creation in dry-run mode
 - **THEN** the static annotation remains mutation-capable and non-idempotent while the result clearly reports whether a write occurred
 
+#### Scenario: Schedule deletion metadata
+- **WHEN** a client inspects `actual_delete_schedule`
+- **THEN** it is described and annotated as destructive and its schema still requires literal per-call confirmation
+
 ### Requirement: Consistent tool-level errors
-Operational failures SHALL be returned as MCP tool errors rather than malformed protocol responses or uncaught output. Errors SHALL preserve the existing public envelope with stable code, sanitized English message, operation name, and retryability, and MAY add safe `details`, `recoveryAction`, entity context, or state. Entity context SHALL support account, category group, category, transaction, payee, and rule identities. Stable domain codes SHALL cover not-found, name conflict, invalid reference, unsupported entity or rule shape, protected Actual entity, destructive confirmation, in-use relationships, preflight failure, mutation failure, synchronization failure, and post-mutation verification failure as applicable. Raw SDK messages MUST NOT become the public contract.
+Operational failures SHALL be returned as MCP tool errors rather than malformed protocol responses or uncaught output. Errors SHALL preserve the existing public envelope with stable code, sanitized English message, operation name, and retryability, and MAY add safe `details`, `recoveryAction`, entity context, or state. Entity context SHALL support account, category group, category, transaction, payee, rule, schedule, and budget-month identities. Stable domain codes SHALL include `READ_ONLY_MODE`, `DESTRUCTIVE_OPERATIONS_DISABLED`, `SCHEDULE_NOT_FOUND`, `INVALID_RECURRENCE`, `SCHEDULE_REFERENCE_INVALID`, and `INVALID_SUMMARY_RANGE` in addition to existing codes. Raw SDK messages MUST NOT become the public contract.
 
 #### Scenario: Connection failure before mutation
 - **WHEN** an Actual operation fails because the server is unreachable
 - **THEN** the caller receives a sanitized structured error with an accurate retryability value
 
 #### Scenario: Deterministic domain refusal
-- **WHEN** a destructive precondition, transfer-payee protection, rule-shape restriction, reference check, compatibility rule, or validation rule fails
+- **WHEN** an operational policy, destructive precondition, schedule validation, reference check, summary-range rule, compatibility rule, or other validation rule fails
 - **THEN** the caller receives a stable domain code with `retryable: false` and safe details explaining the observed condition
 
 #### Scenario: Partial mutation failure
-- **WHEN** an error occurs after a local mutation, including a payee merge, may have taken effect
+- **WHEN** an error occurs after a local mutation may have taken effect
 - **THEN** the error identifies potential partial state and instructs safe synchronization and read recovery without encouraging the complete mutation to be replayed
 
 #### Scenario: Unexpected failure
@@ -167,3 +181,21 @@ Budget validation, unsupported-mode, incompatible-category, unavailable-month, o
 #### Scenario: Copy partial state
 - **WHEN** copy fails after local changes may have occurred
 - **THEN** the structured error identifies potential partial state and safe recovery actions without instructing the caller to replay the mutation
+
+### Requirement: Preserve v0.6.0 public contracts
+All 53 v0.6.0 tools MUST retain their names, previously required inputs, strictness, behavioral annotations, wrapper shapes, and compatible required output fields. `actual_health` and `actual_sync` MAY add only the optional metadata defined by this change. Operational policy errors MAY prevent a previously valid mutation only when the operator explicitly enables read-only mode or disables destructive operations; default configuration SHALL preserve prior authorization behavior.
+
+#### Scenario: Existing v0.6.0 client under default modes
+- **WHEN** a client invokes any v0.6.0 tool with a previously valid request and default operational modes
+- **THEN** the request, required response fields, annotations, and existing safety behavior remain compatible in v0.7.0
+
+#### Scenario: Optional health and sync metadata
+- **WHEN** a v0.6.0 client ignores fields newly added to health or sync
+- **THEN** it can continue consuming every previously required field unchanged
+
+### Requirement: New tool schema strictness
+Every schedule, financial-summary, and runtime-status tool SHALL have a strict Zod input and output schema. Unknown fields, raw recurrence data, unsafe amounts, invalid dates, unsupported references, unbounded limits, and inconsistent discriminated variants SHALL fail validation before any Actual-dependent operation.
+
+#### Scenario: Invalid new-tool input
+- **WHEN** a client supplies an unknown or malformed field to a v0.7.0 tool
+- **THEN** the MCP returns a protocol-valid input error and performs no Actual operation
