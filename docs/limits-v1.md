@@ -1,0 +1,44 @@
+# Actual Budget MCP v1 limits
+
+This file is generated from `PUBLIC_LIMIT_CATALOG` in `src/schemas.ts`. Do not edit it by hand.
+
+Public limits reject oversized requests or results before unbounded work or mutation. Defaults are applied by
+the input schema. Sentinel limits are internal, fixed query sizes: they request exactly one extra row (or one
+linked counterpart) only to prove that a complete operation fits within its public maximum. They never expand
+the number of records returned to a caller.
+
+| Name | Value | Kind | Tool consumers | Meaning |
+| --- | ---: | --- | --- | --- |
+| `DEFAULT_BUDGET_CATEGORY_RESULTS` | 100 | `default` | Shared schema/runtime | Default categories returned by budget detail. |
+| `DEFAULT_BUDGET_COPY_DIFFERENCE_RESULTS` | 100 | `default` | Shared schema/runtime | Default visible budget-copy differences. |
+| `DEFAULT_DIAGNOSTIC_WINDOW_DAYS` | 3 | `default` | Shared schema/runtime | Default transfer/duplicate candidate date window. |
+| `DEFAULT_PAGINATION_OFFSET` | 0 | `default` | Shared schema/runtime | Default and minimum zero-based page offset. |
+| `DEFAULT_SCHEDULE_RESULTS` | 100 | `default` | Shared schema/runtime | Default schedule page size. |
+| `DEFAULT_TOP_PAYEE_RESULTS` | 10 | `default` | Shared schema/runtime | Default top-payee breakdown size. |
+| `DEFAULT_TRANSACTION_SEARCH_RESULTS` | 100 | `default` | Shared schema/runtime | Default transaction, transfer, and diagnostic page size. |
+| `LEDGER_QUERY_SENTINEL_LIMIT` | 5001 | `sentinel` | `actual_search_transfers`, `actual_create_transfer`, `actual_find_possible_transfers`, `actual_find_possible_duplicates`, `actual_get_account_reconciliation`, `actual_delete_schedule`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Internal one-extra-row query limit used only to detect ledger overflow. |
+| `LINKED_TRANSACTION_LOOKUP_LIMIT` | 2 | `sentinel` | `actual_get_transaction`, `actual_get_transfer` | Exact transaction plus at most one linked counterpart. |
+| `MAX_BUDGET_CATEGORY_RESULTS` | 500 | `public` | `actual_get_budget_summary` | Maximum categories returned by a budget detail request. |
+| `MAX_BUDGET_COPY_CHANGES` | 500 | `public` | `actual_copy_budget_month` | Maximum category changes in one budget copy. |
+| `MAX_BUDGET_COPY_DIFFERENCE_RESULTS` | 500 | `public` | `actual_copy_budget_month` | Maximum visible budget-copy differences. |
+| `MAX_BULK_TRANSACTION_UPDATES` | 100 | `public` | `actual_bulk_update_transactions` | Maximum desired-state transaction updates in one bulk call. |
+| `MAX_DATE_RANGE_DAYS` | 366 | `public` | `actual_get_budget_summary`, `actual_get_transactions`, `actual_search_transactions`, `actual_bulk_update_transactions`, `actual_import_transactions`, `actual_search_transfers`, `actual_find_possible_transfers`, `actual_get_account_reconciliation`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum inclusive date range in days. |
+| `MAX_DIAGNOSTIC_WINDOW_DAYS` | 7 | `public` | `actual_find_possible_transfers`, `actual_find_possible_duplicates` | Maximum transfer/duplicate candidate date window. |
+| `MAX_ENTITY_NAME_LENGTH` | 255 | `public` | `actual_list_payees`, `actual_bulk_update_transactions`, `actual_update_transaction`, `actual_list_transfer_payees`, `actual_create_transfer`, `actual_create_account`, `actual_update_account`, `actual_create_category_group`, `actual_update_category_group`, `actual_delete_category_group`, `actual_create_category`, `actual_update_category`, `actual_move_category`, `actual_hide_category`, `actual_unhide_category`, `actual_delete_category`, `actual_get_payee`, `actual_create_payee`, `actual_update_payee`, `actual_delete_payee`, `actual_merge_payees`, `actual_create_rule`, `actual_update_rule`, `actual_list_schedules`, `actual_get_schedule`, `actual_create_schedule`, `actual_update_schedule`, `actual_delete_schedule` | Maximum trimmed entity-name length. |
+| `MAX_ID_LENGTH` | 512 | `public` | `actual_get_budget_month`, `actual_get_budget_summary`, `actual_set_budget_amount`, `actual_set_budget_carryover`, `actual_hold_budget_for_next_month`, `actual_reset_budget_hold`, `actual_get_account`, `actual_get_transactions`, `actual_get_transaction`, `actual_search_transactions`, `actual_preview_import`, `actual_bulk_update_transactions`, `actual_import_transactions`, `actual_update_transaction`, `actual_delete_transaction`, `actual_get_transfer`, `actual_search_transfers`, `actual_create_transfer`, `actual_find_possible_transfers`, `actual_find_possible_duplicates`, `actual_get_account_reconciliation`, `actual_create_account`, `actual_update_account`, `actual_close_account`, `actual_reopen_account`, `actual_delete_account`, `actual_create_category_group`, `actual_update_category_group`, `actual_delete_category_group`, `actual_create_category`, `actual_update_category`, `actual_move_category`, `actual_hide_category`, `actual_unhide_category`, `actual_delete_category`, `actual_get_payee`, `actual_create_payee`, `actual_update_payee`, `actual_delete_payee`, `actual_merge_payees`, `actual_get_rule`, `actual_create_rule`, `actual_update_rule`, `actual_delete_rule`, `actual_list_schedules`, `actual_get_schedule`, `actual_create_schedule`, `actual_update_schedule`, `actual_delete_schedule`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum trimmed opaque identifier length. |
+| `MAX_IMPORT_BATCH` | 500 | `public` | `actual_preview_import`, `actual_import_transactions` | Maximum transactions in one import request. |
+| `MAX_LEDGER_SCAN_RESULTS` | 5000 | `public` | `actual_get_transactions`, `actual_search_transfers`, `actual_create_transfer`, `actual_find_possible_transfers`, `actual_find_possible_duplicates`, `actual_get_account_reconciliation`, `actual_delete_schedule`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum complete ledger rows classified or returned by bounded operations. |
+| `MAX_PAYEE_MERGE_SOURCES` | 100 | `public` | `actual_merge_payees` | Maximum source payees in one merge. |
+| `MAX_RULE_ACTIONS` | 100 | `public` | `actual_create_rule`, `actual_update_rule` | Maximum actions in one writable rule. |
+| `MAX_RULE_CONDITIONS` | 100 | `public` | `actual_create_rule`, `actual_update_rule` | Maximum conditions in one writable rule. |
+| `MAX_RULE_LIST_VALUES` | 250 | `public` | `actual_create_rule`, `actual_update_rule` | Maximum values in one list-valued rule condition. |
+| `MAX_SCHEDULE_MONTH_DAY` | 31 | `public` | Shared schema/runtime | Maximum calendar day recurrence value. |
+| `MAX_SCHEDULE_OFFSET` | 10000 | `public` | `actual_list_schedules` | Maximum schedule page offset. |
+| `MAX_SCHEDULE_PATTERNS` | 31 | `public` | `actual_create_schedule`, `actual_update_schedule` | Maximum recurrence patterns in one schedule input. |
+| `MAX_SCHEDULE_RESULTS` | 250 | `public` | `actual_list_schedules` | Maximum schedule page size. |
+| `MAX_SCHEDULE_WEEKDAY_OCCURRENCE` | 5 | `public` | Shared schema/runtime | Absolute maximum monthly weekday occurrence. |
+| `MAX_SUMMARY_SCOPE_IDS` | 250 | `public` | `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum account IDs or category IDs in one summary scope. |
+| `MAX_TEXT_LENGTH` | 10000 | `public` | `actual_get_budget_summary`, `actual_get_transactions`, `actual_get_transaction`, `actual_search_transactions`, `actual_preview_import`, `actual_bulk_update_transactions`, `actual_import_transactions`, `actual_update_transaction`, `actual_delete_transaction`, `actual_list_transfer_payees`, `actual_get_transfer`, `actual_search_transfers`, `actual_create_transfer`, `actual_find_possible_transfers`, `actual_list_rules`, `actual_get_rule`, `actual_create_rule`, `actual_update_rule`, `actual_delete_rule`, `actual_list_schedules`, `actual_get_schedule`, `actual_create_schedule`, `actual_update_schedule`, `actual_delete_schedule`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum caller-authored notes, text, or rule text length. |
+| `MAX_TOP_PAYEE_RESULTS` | 50 | `public` | `actual_get_budget_summary`, `actual_get_month_summary`, `actual_get_spending_summary`, `actual_get_income_summary` | Maximum top-payee breakdown size. |
+| `MAX_TRANSACTION_SEARCH_OFFSET` | 10000 | `public` | `actual_search_transactions`, `actual_search_transfers`, `actual_find_possible_transfers`, `actual_find_possible_duplicates` | Maximum transaction, transfer, or diagnostic page offset. |
+| `MAX_TRANSACTION_SEARCH_RESULTS` | 250 | `public` | `actual_search_transactions`, `actual_search_transfers`, `actual_find_possible_transfers`, `actual_find_possible_duplicates` | Maximum transaction, transfer, diagnostic page, or identifier-filter size. |

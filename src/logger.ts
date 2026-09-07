@@ -19,9 +19,10 @@ export function createLogger(secrets: readonly (string | undefined)[] = [], writ
 }
 
 export function protectStdout(): void {
-  console.log = (...args: unknown[]) => process.stderr.write(`${args.map(String).join(' ')}\n`);
+  const suppressed = () => process.stderr.write('SDK console output suppressed to preserve MCP protocol and privacy.\n');
+  console.log = suppressed;
   console.info = console.log;
   console.debug = console.log;
-  console.warn = (...args: unknown[]) => process.stderr.write(`${args.map(String).join(' ')}\n`);
+  console.warn = suppressed;
   console.error = console.warn;
 }

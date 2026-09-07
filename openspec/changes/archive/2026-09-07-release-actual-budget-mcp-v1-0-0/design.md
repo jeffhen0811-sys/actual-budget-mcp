@@ -39,9 +39,9 @@ Putting all coverage strings directly in the runtime registry was rejected becau
 
 ### 3. Preserve the 0.7.0 surface with a semantic compatibility check
 
-Tool names and count are exact. Inputs are compatible when every baseline-valid payload remains valid; adding a required field or tightening a constraint is incompatible. Outputs are compatible only when baseline required wrappers, fields, types, nullability, and meanings remain intact. For this consolidation release, avoid additive output fields unless an essential audited defect requires them and receives explicit review.
+Tool names and count are exact. Inputs are compatible when every baseline-valid payload remains valid; adding a required field or tightening a constraint is incompatible unless the exact path and bound are recorded as a reviewed safety exception. The sole 1.0.0 exception is the finite ceiling applied to the 17 array paths that were unbounded in v0.7.0, as documented in `breaking-change-review-unbounded-input-arrays.md`. Outputs are compatible only when baseline required wrappers, fields, types, nullability, and meanings remain intact. For this consolidation release, avoid additive output fields unless an essential audited defect requires them and receives explicit review.
 
-Raw JSON text comparison was rejected because harmless schema ordering and serializer details can differ. The comparison should normalize JSON Schema and enforce explicit compatibility rules, with selected behavioral fixtures for refinements that JSON Schema alone cannot express.
+Raw JSON text comparison was rejected because harmless schema ordering and serializer details can differ. The comparison should normalize JSON Schema and enforce explicit compatibility rules, with selected behavioral fixtures for refinements that JSON Schema alone cannot express. Reviewed exceptions are machine-readable, path-specific, and fail closed if the baseline path, approved value, or final schema differs.
 
 ### 4. Retain the three exclusive runtime capability classes
 
@@ -77,6 +77,12 @@ Write suites register exact IDs immediately and clean in dependency order inside
 
 Version values change to 1.0.0 in package, lockfile root, MCP metadata, tests, docs, Docker examples, and applicable specs. The installed Actual SDK remains exact 26.8.1. The final validation runs after the version update on the same commit described by readiness.
 
+### 11. Bound the five previously unbounded request families as a reviewed 1.0.0 safety correction
+
+Keep the requested 1.0.0 release line and apply only the reviewed limits recorded in `breaking-change-review-unbounded-input-arrays.md`: 31 schedule recurrence patterns, 100 payee merge sources, 100 rule conditions, 100 rule actions, and 250 values in one list-valued rule condition. These ceilings prevent unconstrained validation and mutation work while remaining well above normal operational payloads.
+
+The compatibility checker consumes an exact-path exception manifest rather than weakening input comparison globally. A lower limit, a new exception path, or any other input tightening remains incompatible. Clients exceeding a ceiling must split the request into bounded calls; rule fragments created by splitting remain subject to ordinary rule ordering and semantic review.
+
 ## Risks / Trade-offs
 
 - **[Registry refactor accidentally changes schemas]** → Capture the baseline first, normalize discovery output, and run compatibility checks after each registry migration step.
@@ -87,6 +93,7 @@ Version values change to 1.0.0 in package, lockfile root, MCP metadata, tests, d
 - **[Documentation count creates maintenance burden]** → Generate tabular references from metadata and keep narrative documents focused on distinct operator questions.
 - **[Docker or Actual environment is unavailable]** → Record the gate as unavailable and produce `NOT READY`; do not weaken the requirement at reporting time.
 - **[Historical OpenSpec version language remains confusing]** → Modify only requirements that conflict with the active 1.0.0 state and add explicit v0.7-to-v1 preservation requirements; retain older scenarios as compatibility history where non-conflicting.
+- **[Reviewed safety exception hides unrelated schema drift]** → Store exact baseline JSON pointers and approved `maxItems` values in a versioned manifest; make compatibility verification reject missing, stale, broader, or stricter exceptions.
 
 ## Migration Plan
 

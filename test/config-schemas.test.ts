@@ -35,6 +35,15 @@ describe('configuration', () => {
     });
   });
 
+  it('rejects invalid server URLs before creating a cache directory', async () => {
+    await expect(loadConfig({
+      ACTUAL_SERVER_URL: 'not a URL', ACTUAL_PASSWORD: 'do-not-leak', ACTUAL_SYNC_ID: 'private-sync-id'
+    })).rejects.toSatisfy(error => {
+      const text = String(error);
+      return text.includes('ACTUAL_SERVER_URL') && !text.includes('do-not-leak') && !text.includes('private-sync-id');
+    });
+  });
+
   it('uses the documented default data directory', async () => {
     const result = await loadConfig({ ACTUAL_SERVER_URL: 'http://actual.example', ACTUAL_PASSWORD: 'secret', ACTUAL_SYNC_ID: 'budget' });
     expect(result.dataDir).toBe('/tmp/actual-budget-mcp');

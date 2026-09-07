@@ -238,10 +238,11 @@ realDescribe.sequential('real Actual read integration', () => {
       startDate: '2026-08-01', endDate: '2026-08-31', limit: 100, includeTotals: true
     }));
     const totalsMs = Math.round(performance.now() - startedTotals);
-    console.info(`advanced-search observation: returned=${page.page.returned} pageMs=${pageMs} totalsMs=${totalsMs}`);
+    console.info(`performance-observation workload=transaction-search-100 requested=100 returned=${page.page.returned} pageMs=${pageMs} totalsMs=${totalsMs}`);
   });
 
   it('reads transfer payees, transfer search, diagnostics, and reconciliation without mutation', async () => {
+    const startedAt = performance.now();
     const transferPayees = await client.listTransferPayees();
     expect(() => transferPayeesOutputSchema.parse({ transferPayees })).not.toThrow();
     expect(transferPayees.length).toBeGreaterThan(0);
@@ -265,6 +266,7 @@ realDescribe.sequential('real Actual read integration', () => {
     const reconciliation = await client.getAccountReconciliation(account.id, '2026-08-31');
     expect(() => accountReconciliationOutputSchema.parse(reconciliation)).not.toThrow();
     expect(reconciliation.balances.uncleared).toBe(reconciliation.balances.ledger - reconciliation.balances.cleared);
+    console.info(`performance-observation workload=transfer-duplicate-reconciliation transferCandidates=${possibleTransfers.counts.matched} duplicateCandidates=${possibleDuplicates.counts.matched} durationMs=${Math.round(performance.now() - startedAt)}`);
   });
 
   it('validates schedule, summary, and runtime read contracts without mutation', async () => {
@@ -286,8 +288,11 @@ realDescribe.sequential('real Actual read integration', () => {
     expect(() => incomeSummaryOutputSchema.parse(income)).not.toThrow();
     const status = await client.runtimeStatus();
     expect(() => runtimeStatusOutputSchema.parse(status)).not.toThrow();
-    expect(status).toMatchObject({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
+    expect(status).toMatchObject({ mcpVersion: '1.0.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
     expect(JSON.stringify(status)).not.toContain(process.env.ACTUAL_SYNC_ID ?? '__missing__');
-    console.info(`v0.7 read observation: schedules=${schedules.page.returned} elapsedMs=${Math.round(performance.now() - startedAt)}`);
+    const annualStartedAt = performance.now();
+    await expect(client.getSpendingSummary({ startDate: '2026-01-01', endDate: '2026-12-31' })).resolves.toBeDefined();
+    const annualDurationMs = Math.round(performance.now() - annualStartedAt);
+    console.info(`performance-observation workload=schedule-month-annual-runtime schedulesReturned=${schedules.page.returned} monthAndRuntimeMs=${Math.round(performance.now() - startedAt)} annualSummaryMs=${annualDurationMs}`);
   });
 });

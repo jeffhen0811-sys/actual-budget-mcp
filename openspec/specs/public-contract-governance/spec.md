@@ -1,15 +1,18 @@
+# public-contract-governance Specification
+
 ## Purpose
-
 Define how Actual Budget MCP records, verifies, documents, and preserves the stable public contract promised to all 1.x MCP clients.
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: Immutable v0.7.0 compatibility baseline
-Before changing the public surface, the project SHALL record an immutable machine-readable baseline tied to the clean 0.7.0 source commit. The baseline SHALL contain all 62 unique tool names, descriptions, annotations, strict input schemas, and output schemas. Version 1.0.0 MUST preserve every tool name and every request valid under that baseline, and MUST preserve all required output fields, types, wrapper shapes, nullability, and meanings. A removal, merge, rename, newly required input, tightened accepted input, removed output, changed required output type, or changed nullability SHALL be treated as a breaking change and MUST stop release work for explicit review.
+Before changing the public surface, the project SHALL record an immutable machine-readable baseline tied to the clean 0.7.0 source commit. The baseline SHALL contain all 62 unique tool names, descriptions, annotations, strict input schemas, and output schemas. Version 1.0.0 MUST preserve every tool name and every request valid under that baseline except requests exceeding the explicitly reviewed finite ceilings on the 17 previously unbounded array paths documented in `breaking-change-review-unbounded-input-arrays.md`; it MUST preserve all required output fields, types, wrapper shapes, nullability, and meanings. A removal, merge, rename, newly required input, tightened accepted input outside that exact reviewed exception set, removed output, changed required output type, or changed nullability SHALL be treated as a breaking change and MUST stop release work for explicit review.
 
 #### Scenario: Compare final contract with baseline
 - **WHEN** the compatibility regression compares the final 1.0.0 contract with the recorded 0.7.0 baseline
 - **THEN** it finds exactly the same 62 names and no unreviewed incompatible input, output, or annotation change
+
+#### Scenario: Reviewed unbounded-array correction
+- **WHEN** compatibility verification encounters one of the 17 approved baseline array paths
+- **THEN** it accepts only the documented `maxItems` value and rejects a lower value, a different path, or any unrelated tightening
 
 #### Scenario: Essential gap requires a breaking change
 - **WHEN** an audit finds a tool that cannot be supported correctly without changing the frozen contract
@@ -80,3 +83,4 @@ The project SHALL maintain `docs/acceptance-matrix-v1.md` and `docs/support-matr
 #### Scenario: Missing mandatory evidence
 - **WHEN** a supported mandatory acceptance test is skipped or unavailable
 - **THEN** its cell is not `PASS` and the final readiness decision is blocked
+

@@ -15,7 +15,7 @@ describe('runtime status and observed sync telemetry', () => {
     const api = fakeAdapter();
     const client = new ActualClient(api, async () => ({ serverUrl: 'http://user:secret@actual.example:5006/private', password: 'secret', syncId: 'private-id', dataDir }), undefined, { readOnly: true, allowDestructive: false });
     const status = await client.runtimeStatus();
-    expect(status).toMatchObject({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true, server: 'http://actual.example:5006/private', modes: { readOnly: true, allowDestructive: false, effectiveWriteAllowed: false }, cache: { configured: true, locked: true }, queue: { queuedCount: 0 }, syncTelemetry: {} });
+    expect(status).toMatchObject({ mcpVersion: '1.0.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true, server: 'http://actual.example:5006/private', modes: { readOnly: true, allowDestructive: false, effectiveWriteAllowed: false }, cache: { configured: true, locked: true }, queue: { queuedCount: 0 }, syncTelemetry: {} });
     expect(JSON.stringify(status)).not.toMatch(/secret|private-id|actual-status-/);
     await client.shutdown();
   });

@@ -7,6 +7,7 @@ import { planBudgetCopy, projectBudgetMonth } from '../src/actual/budget.js';
 import { ActualClient } from '../src/actual/client.js';
 import { budgetMonthOutputSchema, budgetSummaryOutputSchema } from '../src/mcp/contracts.js';
 import { fakeAdapter } from './helpers.js';
+import { purityBoundaryFingerprint } from './purity-fingerprint.js';
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
@@ -227,8 +228,10 @@ describe('budget copy planning and execution', () => {
       months[month]!.categoryGroups.flatMap(group => group.categories ?? []).find(item => item.id === categoryId)!.budgeted = amount;
     });
     try {
+      const beforePreview = purityBoundaryFingerprint(fixture.api, months);
       await expect(fixture.client.copyBudgetMonth('2026-08', '2026-09')).resolves.toMatchObject({ dryRun: true, executed: false });
       expect(fixture.api.setBudgetAmount).not.toHaveBeenCalled();
+      expect(purityBoundaryFingerprint(fixture.api, months)).toBe(beforePreview);
       await expect(fixture.client.copyBudgetMonth('2026-08', '2026-09', { dryRun: false, mode: 'overwrite' }))
         .rejects.toMatchObject({ code: 'OVERWRITE_CONFIRMATION_REQUIRED' });
       const executed = await fixture.client.copyBudgetMonth('2026-08', '2026-09', {

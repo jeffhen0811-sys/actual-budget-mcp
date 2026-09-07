@@ -1,5 +1,6 @@
 import { q } from '@actual-app/api';
 import { PublicError } from '../errors.js';
+import { LEDGER_QUERY_SENTINEL_LIMIT, LINKED_TRANSACTION_LOOKUP_LIMIT } from '../schemas.js';
 import type { AdapterTransaction, AdapterTransactionQuery } from './adapter.js';
 
 export type TransactionSplitMode = 'inline' | 'grouped';
@@ -128,14 +129,19 @@ export function compileTransferRelationship(transactionIds: string[]): AdapterTr
     .filter({ id: transactionIds.length === 1 ? transactionIds[0]! : { $oneof: transactionIds } })
     .select([...transactionSelect])
     .orderBy([{ id: 'asc' }])
-    .limit(2)
+    .limit(LINKED_TRANSACTION_LOOKUP_LIMIT)
     .options({ splits: 'all' });
 }
 
 /** Fixed bounded scan used by diagnostics and reconciliation; limit is supplied by trusted orchestration. */
 export function compileBoundedLeafTransactions(input: BoundedLeafQueryRequest): AdapterTransactionQuery {
-  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 5_001) {
-    throw new PublicError('CONFIGURATION_ERROR', 'Leaf query limit must be between 1 and 5001.', 'actual_leaf_query', false);
+  if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > LEDGER_QUERY_SENTINEL_LIMIT) {
+    throw new PublicError(
+      'CONFIGURATION_ERROR',
+      `Leaf query limit must be between 1 and ${LEDGER_QUERY_SENTINEL_LIMIT}.`,
+      'actual_leaf_query',
+      false
+    );
   }
   const filters: Filter[] = [
     { date: { $gte: input.startDate, $lte: input.endDate } },

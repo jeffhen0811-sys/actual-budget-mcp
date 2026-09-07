@@ -1,0 +1,25 @@
+{
+  "formatVersion": 1,
+  "baselineVersion": "0.7.0",
+  "releaseVersion": "1.0.0",
+  "decision": "openspec/changes/release-actual-budget-mcp-v1-0-0/breaking-change-review-unbounded-input-arrays.md",
+  "limits": [
+    { "tool": "actual_create_rule", "path": "/properties/actions", "maxItems": 100 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions", "maxItems": 100 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions/items/anyOf/0/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions/items/anyOf/1/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions/items/anyOf/2/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions/items/anyOf/3/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_create_rule", "path": "/properties/conditions/items/anyOf/4/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_create_schedule", "path": "/properties/date/oneOf/1/properties/patterns", "maxItems": 31 },
+    { "tool": "actual_merge_payees", "path": "/properties/sourcePayeeIds", "maxItems": 100 },
+    { "tool": "actual_update_rule", "path": "/properties/actions", "maxItems": 100 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions", "maxItems": 100 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions/items/anyOf/0/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions/items/anyOf/1/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions/items/anyOf/2/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions/items/anyOf/3/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_update_rule", "path": "/properties/conditions/items/anyOf/4/anyOf/1/properties/value", "maxItems": 250 },
+    { "tool": "actual_update_schedule", "path": "/properties/date/oneOf/1/properties/patterns", "maxItems": 31 }
+  ]
+}

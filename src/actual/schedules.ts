@@ -1,6 +1,11 @@
 import { q } from '@actual-app/api';
 import { PublicError } from '../errors.js';
-import { isCalendarDate } from '../schemas.js';
+import {
+  isCalendarDate,
+  LEDGER_QUERY_SENTINEL_LIMIT,
+  MAX_SCHEDULE_MONTH_DAY,
+  MAX_SCHEDULE_WEEKDAY_OCCURRENCE
+} from '../schemas.js';
 import type { AdapterRecurConfig, AdapterSchedule, AdapterTransactionQuery } from './adapter.js';
 
 export type ScheduleAmount =
@@ -84,9 +89,12 @@ export function toSdkScheduleDate(date: ScheduleDate): string | AdapterRecurConf
     if (!date.patterns?.length) recurError('Monthly schedules require at least one supported pattern.');
     for (const pattern of date.patterns) {
       if (pattern.type === 'day') {
-        if (!Number.isSafeInteger(pattern.value) || pattern.value < 1 || pattern.value > 31) recurError('Monthly day values must be between 1 and 31.');
-      } else if (!Number.isSafeInteger(pattern.value) || pattern.value === 0 || pattern.value < -5 || pattern.value > 5) {
-        recurError('Monthly weekday ordinals must be between -5 and 5 and cannot be zero.');
+        if (!Number.isSafeInteger(pattern.value) || pattern.value < 1 || pattern.value > MAX_SCHEDULE_MONTH_DAY) {
+          recurError(`Monthly day values must be between 1 and ${MAX_SCHEDULE_MONTH_DAY}.`);
+        }
+      } else if (!Number.isSafeInteger(pattern.value) || pattern.value === 0 ||
+          pattern.value < -MAX_SCHEDULE_WEEKDAY_OCCURRENCE || pattern.value > MAX_SCHEDULE_WEEKDAY_OCCURRENCE) {
+        recurError(`Monthly weekday ordinals must be between -${MAX_SCHEDULE_WEEKDAY_OCCURRENCE} and ${MAX_SCHEDULE_WEEKDAY_OCCURRENCE} and cannot be zero.`);
       }
     }
   }
@@ -120,7 +128,10 @@ export function fromSdkScheduleDate(value: unknown): ScheduleDate | null {
   if (recur.frequency === 'monthly' && (!Array.isArray(patterns) || patterns.length === 0)) return null;
   if (recur.frequency !== 'monthly' && patterns !== undefined) return null;
   if (patterns?.some(pattern => !['day', 'SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].includes(pattern.type) ||
-    !Number.isSafeInteger(pattern.value) || (pattern.type === 'day' ? pattern.value < 1 || pattern.value > 31 : pattern.value === 0 || pattern.value < -5 || pattern.value > 5))) return null;
+    !Number.isSafeInteger(pattern.value) || (pattern.type === 'day'
+      ? pattern.value < 1 || pattern.value > MAX_SCHEDULE_MONTH_DAY
+      : pattern.value === 0 || pattern.value < -MAX_SCHEDULE_WEEKDAY_OCCURRENCE ||
+        pattern.value > MAX_SCHEDULE_WEEKDAY_OCCURRENCE))) return null;
   let end: NonNullable<Extract<ScheduleDate, { type: 'recurring' }>['end']>;
   if (recur.endMode === undefined || recur.endMode === 'never') end = { type: 'never' };
   else if (recur.endMode === 'after_n_occurrences' && Number.isSafeInteger(recur.endOccurrences) && recur.endOccurrences! > 0) {
@@ -188,6 +199,6 @@ export function compileScheduleTransactions(scheduleId: string): AdapterTransact
     .filter({ schedule: scheduleId })
     .select(['id', 'schedule'])
     .orderBy([{ id: 'asc' }])
-    .limit(5001)
+    .limit(LEDGER_QUERY_SENTINEL_LIMIT)
     .options({ splits: 'all' });
 }

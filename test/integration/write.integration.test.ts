@@ -519,7 +519,7 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
       registry.release('transaction', id);
     }
     expect(await permanentFixtureFingerprint(client)).toBe(beforePreview);
-    console.info(`advanced-volume observations: previewItems=100 previewMs=${preview100Ms} bulkItems=50 bulkDryRunMs=${bulk50Ms}`);
+    console.info(`performance-observation workload=preview-100-bulk-dry-run-50 previewItems=100 previewMs=${preview100Ms} bulkItems=50 bulkDryRunMs=${bulk50Ms}`);
   });
 
   it('preflights and executes three heterogeneous bulk updates with exact cleanup and idempotent repeat', async () => {
@@ -735,8 +735,10 @@ writeDescribe.sequential('guarded real Actual write integration', () => {
       await expect(client.setBudgetCarryover(selected.sourceMonth, created.category.id, true)).resolves.toMatchObject({
         changed: true, effectiveFromMonth: selected.sourceMonth
       });
+      const beforeCopyPreview = await permanentFixtureFingerprint(client);
       const preview = await client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { includeCarryover: true });
       expect(preview).toMatchObject({ dryRun: true, executed: false, changed: true });
+      expect(await permanentFixtureFingerprint(client)).toBe(beforeCopyPreview);
       const copied = await client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { dryRun: false, includeCarryover: true });
       expect(copied).toMatchObject({ executed: true, synchronized: true, verified: true });
       await expect(client.copyBudgetMonth(selected.sourceMonth, selected.targetMonth, { dryRun: false, includeCarryover: true }))

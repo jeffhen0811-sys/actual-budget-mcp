@@ -46,6 +46,22 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
     await client.shutdown();
   });
 
+  it('sanitizes credential and decryption startup failures while keeping later discovery retryable', async () => {
+    const { api, client } = await fixture();
+    vi.mocked(api.downloadBudget)
+      .mockRejectedValueOnce(new Error('wrong password=password-sentinel sync=private-budget'))
+      .mockRejectedValueOnce(new Error('decrypt failed password=password-sentinel'))
+      .mockResolvedValueOnce(undefined);
+    await expect(client.listAccounts()).rejects.toMatchObject({ code: 'INTERNAL_ERROR', message: 'The Actual operation failed unexpectedly.' });
+    await expect(client.listAccounts()).rejects.toSatisfy(error =>
+      error instanceof PublicError && error.code === 'BUDGET_LOAD_ERROR' &&
+      !error.message.includes('password-sentinel') && !error.message.includes('private-budget')
+    );
+    await expect(client.listAccounts()).resolves.toEqual([]);
+    expect(api.init).toHaveBeenCalledTimes(3);
+    await client.shutdown();
+  });
+
   it('prevents two processes from sharing the same cache directory', async () => {
     const { api, client, config } = await fixture();
     const otherApi = fakeAdapter();
@@ -65,7 +81,7 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
       server: 'http://actual.local:5006',
       budgetLoaded: true,
       diagnosticCode: 'network-failure',
-      mcpVersion: '0.7.0',
+      mcpVersion: '1.0.0',
       sdkVersion: '26.8.1',
       readOnlyMode: false
     });
@@ -106,7 +122,7 @@ describe('ActualClient lifecycle and adapter orchestration', () => {
     vi.mocked(api.sync).mockRejectedValueOnce(new Error('network failure'));
     await expect(client.updateTransaction('transaction', { notes: 'explicit note' })).rejects.toMatchObject({
       code: 'MUTATION_SYNC_FAILED', retryable: false,
-      metadata: { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true }
+      metadata: { recoveryAction: 'actual_sync_then_exact_read', state: 'local_change_may_have_succeeded', partialState: true }
     });
     expect(api.updateTransaction).toHaveBeenCalledOnce();
     await client.shutdown();

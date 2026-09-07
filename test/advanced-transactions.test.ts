@@ -26,6 +26,7 @@ import {
   transactionSchema
 } from '../src/mcp/contracts.js';
 import { fakeAdapter } from './helpers.js';
+import { purityBoundaryFingerprint } from './purity-fingerprint.js';
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
@@ -175,6 +176,26 @@ describe('shared import normalization, fingerprint, and preview', () => {
     expect(importRequestFingerprint(normalizeImportRequest('account', [...items, { ...items[0]!, imported_id: 'source:2' }]))).not.toBe(importRequestFingerprint(omitted));
   });
 
+  it('binds every supported import option and reconciliation field into the reviewed request', () => {
+    const item = {
+      date: '2026-01-01', amount: -1200, imported_id: 'source:1', payee: 'payee',
+      payee_name: 'Cafe', imported_payee: 'BANK CAFE', notes: 'receipt', cleared: true, category: 'category'
+    };
+    const baseline = importRequestFingerprint(normalizeImportRequest('account', [item]));
+    const variants = [
+      normalizeImportRequest('other-account', [item]),
+      normalizeImportRequest('account', [item], { defaultCleared: false }),
+      normalizeImportRequest('account', [item], { reimportDeleted: true }),
+      ...(['date', 'amount', 'imported_id', 'payee', 'payee_name', 'imported_payee', 'notes', 'cleared', 'category'] as const)
+        .map(field => normalizeImportRequest('account', [{ ...item, [field]: field === 'amount' ? -1201 : field === 'cleared' ? false : `${item[field]}-changed` }]))
+    ];
+    for (const request of variants) expect(importRequestFingerprint(request)).not.toBe(baseline);
+
+    expect(() => importTransactionsInputSchema.parse({
+      accountId: 'account', transactions: [{ ...item, transfer_id: 'direct-relationship-mutation' }]
+    })).toThrow();
+  });
+
   it('strictly parses installed preview evidence and rejects malformed shapes', () => {
     expect(parseImportResult({ added: ['preview'], updated: ['existing'], errors: [], updatedPreview: [{
       transaction: { id: 'preview', account: 'a', date: '2026-01-01', amount: -1 },
@@ -186,6 +207,8 @@ describe('shared import normalization, fingerprint, and preview', () => {
 
   it('keeps preview read-only, labels generated IDs, sanitizes errors, and shares the import fingerprint', async () => {
     const { api, client } = await fixture();
+    const controlledState = { accountId: 'account', transactions: structuredClone(items) };
+    const beforePreview = purityBoundaryFingerprint(api, controlledState);
     vi.mocked(api.importTransactions).mockResolvedValueOnce({
       added: ['generated-preview-id'], updated: ['existing-id'],
       errors: [{ message: 'bad password=secret' }],
@@ -208,6 +231,7 @@ describe('shared import normalization, fingerprint, and preview', () => {
     expect(api.importTransactions).toHaveBeenCalledWith('account', expect.any(Array), {
       defaultCleared: true, reimportDeleted: false, dryRun: true
     });
+    expect(purityBoundaryFingerprint(api, controlledState)).toBe(beforePreview);
 
     vi.mocked(api.importTransactions).mockResolvedValueOnce({ added: [], updated: [], errors: [], updatedPreview: [] });
     await expect(client.importTransactions('account', items, {}, preview.requestFingerprint)).resolves.toMatchObject({
@@ -226,6 +250,31 @@ describe('shared import normalization, fingerprint, and preview', () => {
     expect(() => importTransactionsInputSchema.parse({ accountId: 'a', transactions: items, payeeNameNormalization: 'none' })).toThrow();
     expect(() => previewImportInputSchema.parse({ accountId: 'a', transactions: items, dryRun: false })).toThrow();
     expect(getTransactionInputSchema.parse({ transactionId: 't' })).toEqual({ transactionId: 't' });
+    await client.shutdown();
+  });
+
+  it('reports exact imported and pending identifiers when post-import synchronization is ambiguous', async () => {
+    const { api, client } = await fixture();
+    vi.mocked(api.importTransactions).mockResolvedValueOnce({
+      added: ['added-transaction'], updated: ['updated-transaction'], errors: [], updatedPreview: []
+    });
+    vi.mocked(api.sync).mockRejectedValueOnce(new Error('network failure'));
+    await expect(client.importTransactions('account', items)).rejects.toMatchObject({
+      code: 'MUTATION_SYNC_FAILED',
+      metadata: {
+        recoveryAction: 'actual_sync_then_exact_read',
+        state: 'local_change_may_have_succeeded',
+        partialState: true,
+        details: {
+          addedTransactionIds: ['added-transaction'],
+          updatedTransactionIds: ['updated-transaction'],
+          affectedTransactionIds: ['added-transaction', 'updated-transaction'],
+          pendingImportedIds: ['source:1']
+        }
+      }
+    });
+    expect(api.importTransactions).toHaveBeenCalledOnce();
+    expect(api.sync).toHaveBeenCalledOnce();
     await client.shutdown();
   });
 });

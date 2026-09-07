@@ -1,0 +1,1805 @@
+{
+  "formatVersion": 1,
+  "baselineVersion": "0.7.0",
+  "sourceCommit": "c5b752a5f7f3067a40480f72078907c72ad26c66",
+  "tools": [
+    {
+      "name": "actual_bulk_update_transactions",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "preflights and executes three heterogeneous bulk updates with exact cleanup and idempotent repeat"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs bulk dry-run, confirmation, heterogeneous execution, exact read-back, and idempotent repeat through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_close_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_copy_budget_month",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "executes guarded budget writes and copy through compiled MCP stdio with exact cleanup"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_category_group",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_payee",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "runs the guarded real payee create, read, rename, preflight, and delete lifecycle"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs a restart-safe payee lifecycle through MCP-only calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_rule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "persists, updates, functionally executes, and deletes a uniquely owned rule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "creates, updates, functionally executes, and deletes a rule using only MCP tool calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_schedule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "creates, lists, gets, updates, guards, and deletes an isolated schedule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs an isolated schedule lifecycle and destructive kill-switch check through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_create_transfer",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "previews, creates, verifies, owns, and deletes one reciprocal transfer pair"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "previews, creates, verifies, owns, and deletes one reciprocal transfer through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_category_group",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_payee",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "runs the guarded real payee create, read, rename, preflight, and delete lifecycle"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs a restart-safe payee lifecycle through MCP-only calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_rule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "persists, updates, functionally executes, and deletes a uniquely owned rule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "creates, updates, functionally executes, and deletes a rule using only MCP tool calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_schedule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "creates, lists, gets, updates, guards, and deletes an isolated schedule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs an isolated schedule lifecycle and destructive kill-switch check through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_delete_transaction",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "deletes only the captured, UUID-owned transaction"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "deletes only the captured transaction after destructive confirmation"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_find_possible_duplicates",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "performs exact lookup and typed cross-account search through the installed query path"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "executes exact lookup and advanced search filters, ordering, pagination, totals, and split modes through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_find_possible_transfers",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads transfer payees, transfer search, diagnostics, and reconciliation without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "exercises transfer, diagnostic, and reconciliation reads through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "finds both dedicated accounts by name and validates normalized account output"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_account_reconciliation",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads transfer payees, transfer search, diagnostics, and reconciliation without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "exercises transfer, diagnostic, and reconciliation reads through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_budget_month",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "discovers official budget months and validates month detail, summaries, filters, signs, and mode projection"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads official budget discovery, month detail, and bounded summaries through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_budget_summary",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "discovers official budget months and validates month detail, summaries, filters, signs, and mode projection"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads official budget discovery, month detail, and bounded summaries through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_income_summary",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_month_summary",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_payee",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads individual ordinary and transfer payees and returns exact absent-ID errors"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_rule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates the complete ranked real rule list and exact absent-ID behavior"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads individual payees and the complete ranked rule surface through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_runtime_status",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_schedule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_spending_summary",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_transaction",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "performs exact lookup and typed cross-account search through the installed query path"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "executes exact lookup and advanced search filters, ordering, pagination, totals, and split modes through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_transactions",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "performs exact lookup and typed cross-account search through the installed query path"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "executes exact lookup and advanced search filters, ordering, pagination, totals, and split modes through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_get_transfer",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads transfer payees, transfer search, diagnostics, and reconciliation without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "exercises transfer, diagnostic, and reconciliation reads through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_health",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "passes health preflight through the production contract"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_hide_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_hold_budget_for_next_month",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "executes guarded budget writes and copy through compiled MCP stdio with exact cleanup"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_import_transactions",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "imports a uniquely owned transaction and validates manual and imported records with one schema"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "imports and reads a uniquely owned transaction through MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_accounts",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "finds both dedicated accounts by name and validates normalized account output"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_budget_months",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "discovers official budget months and validates month detail, summaries, filters, signs, and mode projection"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads official budget discovery, month detail, and bounded summaries through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_categories",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates real category groups and nested categories"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_payees",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads individual ordinary and transfer payees and returns exact absent-ID errors"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "calls health, accounts, categories, and payees with matching structured and JSON content"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_rules",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates the complete ranked real rule list and exact absent-ID behavior"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads individual payees and the complete ranked rule surface through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_schedules",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "validates schedule, summary, and runtime read contracts without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "reads schedules, ledger summaries, and sanitized runtime status through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_list_transfer_payees",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads transfer payees, transfer search, diagnostics, and reconciliation without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "exercises transfer, diagnostic, and reconciliation reads through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_merge_payees",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "merges uniquely owned ordinary payees and remaps an owned source transaction"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "merges uniquely owned payees with an owned source transaction through MCP-only calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_move_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_preview_import",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "proves official import preview purity and binds the reviewed request to execution"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "previews without mutation, binds fingerprinted import, and verifies lookup/search through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_reopen_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_reset_budget_hold",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "executes guarded budget writes and copy through compiled MCP stdio with exact cleanup"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_search_transactions",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "performs exact lookup and typed cross-account search through the installed query path"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "executes exact lookup and advanced search filters, ordering, pagination, totals, and split modes through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_search_transfers",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/read.integration.test.ts",
+            "test": "reads transfer payees, transfer search, diagnostics, and reconciliation without mutation"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/read.e2e.test.ts",
+            "test": "exercises transfer, diagnostic, and reconciliation reads through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_set_budget_amount",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "executes guarded budget writes and copy through compiled MCP stdio with exact cleanup"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_set_budget_carryover",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "uses dynamically selected clean months for verified budget amount, carryover, hold/reset, and copy writes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "executes guarded budget writes and copy through compiled MCP stdio with exact cleanup"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_sync",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "performs an explicit sync and keeps the budget operational"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "updates, explicitly syncs, and reads the persisted change through MCP"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_unhide_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_account",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_category",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_category_group",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "administers isolated account and category structure with exact-ID cleanup and complete safety preflights"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "exercises the complete structural lifecycle through real MCP stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_payee",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "runs the guarded real payee create, read, rename, preflight, and delete lifecycle"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs a restart-safe payee lifecycle through MCP-only calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_rule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "persists, updates, functionally executes, and deletes a uniquely owned rule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "creates, updates, functionally executes, and deletes a rule using only MCP tool calls"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_schedule",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "creates, lists, gets, updates, guards, and deletes an isolated schedule"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "runs an isolated schedule lifecycle and destructive kill-switch check through compiled stdio"
+          }
+        ]
+      }
+    },
+    {
+      "name": "actual_update_transaction",
+      "evidence": {
+        "unit": [
+          {
+            "file": "test/mcp.test.ts",
+            "test": "executes every handler successfully with structured and JSON text results"
+          }
+        ],
+        "contract": [
+          {
+            "file": "test/contract/current-contract.test.ts",
+            "test": "matches every current tool against the frozen v0.7.0 contract"
+          }
+        ],
+        "integration": [
+          {
+            "file": "test/integration/write.integration.test.ts",
+            "test": "updates only the transaction created by this run and persists notes"
+          }
+        ],
+        "e2e": [
+          {
+            "file": "test/e2e/write.e2e.test.ts",
+            "test": "updates, explicitly syncs, and reads the persisted change through MCP"
+          }
+        ]
+      }
+    }
+  ]
+}

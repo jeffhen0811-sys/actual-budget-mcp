@@ -8,6 +8,7 @@ import type { AdapterTransaction } from '../src/actual/adapter.js';
 import type { ActualConfig } from '../src/config.js';
 import { bulkUpdateTransactionsInputSchema } from '../src/mcp/contracts.js';
 import { fakeAdapter } from './helpers.js';
+import { purityBoundaryFingerprint } from './purity-fingerprint.js';
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
@@ -85,6 +86,7 @@ describe('bulk transaction orchestration', () => {
   it('defaults to a pure dry-run with bounded audit details', async () => {
     const { api, client } = await fixture();
     vi.mocked(api.aqlQuery).mockResolvedValueOnce({ data: [transactions[0]] });
+    const before = purityBoundaryFingerprint(api, transactions);
     const result = await client.bulkUpdateTransactions([{ transactionId: 'ordinary', fields: { notes: 'reviewed' } }]);
     expect(result).toMatchObject({
       dryRun: true, executed: false, synchronized: false, verified: false, executable: true,
@@ -92,6 +94,7 @@ describe('bulk transaction orchestration', () => {
     });
     expect(api.updateTransaction).not.toHaveBeenCalled();
     expect(api.sync).not.toHaveBeenCalled();
+    expect(purityBoundaryFingerprint(api, transactions)).toBe(before);
     await client.shutdown();
   });
 

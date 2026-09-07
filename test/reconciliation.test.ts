@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, vi } from 'vitest';
 import { ActualClient } from '../src/actual/client.js';
 import { fakeAdapter } from './helpers.js';
+import { purityBoundaryFingerprint } from './purity-fingerprint.js';
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
@@ -27,6 +28,7 @@ describe('account reconciliation client', () => {
     const client = new ActualClient(api, async () => ({
       serverUrl: 'http://actual.example:5006', password: 'secret', syncId: 'budget', dataDir
     }));
+    const before = purityBoundaryFingerprint(api, { transactions: [tx('one', 100, { cleared: true })] });
     await expect(client.getAccountReconciliation('account', '2026-09-01', 100)).resolves.toMatchObject({
       account: { id: 'account', name: 'Checking' }, cutoff: '2026-09-01', status: 'MATCHES_BOTH',
       bankReported: { balanceCurrent: 120, differenceFromLedger: 20 }
@@ -36,6 +38,7 @@ describe('account reconciliation client', () => {
     vi.mocked(api.getAccountBalance).mockResolvedValue(99);
     await expect(client.getAccountReconciliation('account', '2026-09-01')).rejects.toMatchObject({ code: 'QUERY_SHAPE_INVALID' });
     await expect(client.getAccountReconciliation('missing', '2026-09-01')).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    expect(purityBoundaryFingerprint(api, { transactions: [tx('one', 100, { cleared: true })] })).toBe(before);
     await client.shutdown();
   });
 });

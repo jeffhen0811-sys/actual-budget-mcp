@@ -1,9 +1,15 @@
 {
   "name": "actual-budget-mcp",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "description": "A secure MCP stdio server for Actual Budget.",
   "type": "module",
   "private": true,
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "docs"
+  ],
   "bin": {
     "actual-budget-mcp": "dist/index.js"
   },
@@ -27,8 +33,22 @@
     "test:e2e": "npm run build && vitest run --config vitest.e2e.config.ts",
     "test:e2e:read": "npm run build && vitest run --config vitest.e2e.config.ts test/e2e/read.e2e.test.ts",
     "test:e2e:write": "npm run build && vitest run --config vitest.e2e.config.ts test/e2e/write.e2e.test.ts",
-    "test:all": "npm run typecheck && npm test && npm run test:contract && npm run test:integration && npm run test:e2e && npm run build",
+    "test:all": "npm run typecheck && npm test && npm run test:contract && npm run test:integration:read && npm run test:e2e:read && npm run build",
+    "release:check": "npm run typecheck && npm test && npm run test:contract && npm run build && npm run contract:compatibility:check && npm run inventory:check && npm run errors:check && npm run limits:check && npm run idempotency:check && npm run sync:check && npm run package:check && npm run security:scan && git diff --check",
+    "package:check": "npm pack --dry-run --json",
+    "security:scan": "tsx scripts/check-repository-hygiene.ts",
     "contract:baseline:generate": "tsx scripts/generate-v070-contract-baseline.ts",
+    "contract:compatibility:check": "tsx scripts/check-contract-compatibility.ts",
+    "inventory:generate": "tsx scripts/generate-tool-inventory.ts",
+    "inventory:check": "tsx scripts/generate-tool-inventory.ts --check",
+    "errors:generate": "tsx scripts/generate-error-catalog.ts",
+    "errors:check": "tsx scripts/generate-error-catalog.ts --check",
+    "limits:generate": "tsx scripts/generate-limits-catalog.ts",
+    "limits:check": "tsx scripts/generate-limits-catalog.ts --check",
+    "idempotency:generate": "tsx scripts/generate-idempotency-catalog.ts",
+    "idempotency:check": "tsx scripts/generate-idempotency-catalog.ts --check",
+    "sync:generate": "tsx scripts/generate-sync-semantics-catalog.ts",
+    "sync:check": "tsx scripts/generate-sync-semantics-catalog.ts --check",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

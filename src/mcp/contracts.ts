@@ -6,14 +6,29 @@ import {
   budgetResultLimitSchema,
   boundedTextSchema,
   DEFAULT_BUDGET_CATEGORY_RESULTS,
+  DEFAULT_BUDGET_COPY_DIFFERENCE_RESULTS,
+  DEFAULT_DIAGNOSTIC_WINDOW_DAYS,
+  DEFAULT_PAGINATION_OFFSET,
   DEFAULT_SCHEDULE_RESULTS,
   DEFAULT_TOP_PAYEE_RESULTS,
   DEFAULT_TRANSACTION_SEARCH_RESULTS,
   entityNameSchema,
   integerAmountSchema,
   isoDateSchema,
+  MAX_BUDGET_COPY_CHANGES,
+  MAX_BUDGET_COPY_DIFFERENCE_RESULTS,
   MAX_DATE_RANGE_DAYS,
+  MAX_DIAGNOSTIC_WINDOW_DAYS,
+  MAX_IMPORT_BATCH,
   MAX_BULK_TRANSACTION_UPDATES,
+  MAX_PAYEE_MERGE_SOURCES,
+  MAX_RULE_ACTIONS,
+  MAX_RULE_CONDITIONS,
+  MAX_RULE_LIST_VALUES,
+  MAX_SCHEDULE_MONTH_DAY,
+  MAX_SCHEDULE_PATTERNS,
+  MAX_SCHEDULE_WEEKDAY_OCCURRENCE,
+  MAX_SUMMARY_SCOPE_IDS,
   MAX_TRANSACTION_SEARCH_OFFSET,
   MAX_TRANSACTION_SEARCH_RESULTS,
   MAX_SCHEDULE_OFFSET,
@@ -102,30 +117,40 @@ const schedulePatternSchema = z.object({
   value: z.number().int().safe()
 }).strict();
 
-export const scheduleDateSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('oneTime'), date: isoDateSchema }).strict(),
-  z.object({
-    type: z.literal('recurring'),
-    frequency: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
-    start: isoDateSchema,
-    interval: z.number().int().safe().positive(),
-    patterns: z.array(schedulePatternSchema).min(1).optional(),
-    weekend: z.enum(['none', 'before', 'after']).default('none'),
-    end: z.discriminatedUnion('type', [
-      z.object({ type: z.literal('never') }).strict(),
-      z.object({ type: z.literal('afterOccurrences'), occurrences: z.number().int().safe().positive() }).strict(),
-      z.object({ type: z.literal('onDate'), date: isoDateSchema }).strict()
-    ]).default({ type: 'never' })
-  }).strict().superRefine((value, context) => {
-    if (value.frequency === 'monthly' && !value.patterns?.length) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Monthly schedules require patterns.' });
-    if (value.frequency !== 'monthly' && value.patterns !== undefined) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Patterns are supported only for monthly schedules.' });
-    for (const [index, pattern] of (value.patterns ?? []).entries()) {
-      const valid = pattern.type === 'day' ? pattern.value >= 1 && pattern.value <= 31 : pattern.value >= -5 && pattern.value <= 5 && pattern.value !== 0;
-      if (!valid) context.addIssue({ code: 'custom', path: ['patterns', index, 'value'], message: 'Unsupported monthly pattern value.' });
-    }
-    if (value.end.type === 'onDate' && value.end.date < value.start) context.addIssue({ code: 'custom', path: ['end', 'date'], message: 'End date must be on or after start.' });
-  })
-]);
+function buildScheduleDateSchema(maxPatterns?: number) {
+  const patternsSchema = z.array(schedulePatternSchema).min(1);
+  const boundedPatternsSchema = maxPatterns === undefined ? patternsSchema : patternsSchema.max(maxPatterns);
+  return z.discriminatedUnion('type', [
+    z.object({ type: z.literal('oneTime'), date: isoDateSchema }).strict(),
+    z.object({
+      type: z.literal('recurring'),
+      frequency: z.enum(['daily', 'weekly', 'monthly', 'yearly']),
+      start: isoDateSchema,
+      interval: z.number().int().safe().positive(),
+      patterns: boundedPatternsSchema.optional(),
+      weekend: z.enum(['none', 'before', 'after']).default('none'),
+      end: z.discriminatedUnion('type', [
+        z.object({ type: z.literal('never') }).strict(),
+        z.object({ type: z.literal('afterOccurrences'), occurrences: z.number().int().safe().positive() }).strict(),
+        z.object({ type: z.literal('onDate'), date: isoDateSchema }).strict()
+      ]).default({ type: 'never' })
+    }).strict().superRefine((value, context) => {
+      if (value.frequency === 'monthly' && !value.patterns?.length) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Monthly schedules require patterns.' });
+      if (value.frequency !== 'monthly' && value.patterns !== undefined) context.addIssue({ code: 'custom', path: ['patterns'], message: 'Patterns are supported only for monthly schedules.' });
+      for (const [index, pattern] of (value.patterns ?? []).entries()) {
+        const valid = pattern.type === 'day'
+          ? pattern.value >= 1 && pattern.value <= MAX_SCHEDULE_MONTH_DAY
+          : pattern.value >= -MAX_SCHEDULE_WEEKDAY_OCCURRENCE &&
+            pattern.value <= MAX_SCHEDULE_WEEKDAY_OCCURRENCE && pattern.value !== 0;
+        if (!valid) context.addIssue({ code: 'custom', path: ['patterns', index, 'value'], message: 'Unsupported monthly pattern value.' });
+      }
+      if (value.end.type === 'onDate' && value.end.date < value.start) context.addIssue({ code: 'custom', path: ['end', 'date'], message: 'End date must be on or after start.' });
+    })
+  ]);
+}
+
+export const scheduleDateSchema = buildScheduleDateSchema();
+const scheduleDateInputSchema = buildScheduleDateSchema(MAX_SCHEDULE_PATTERNS);
 
 export const scheduleAmountSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('exact'), amount: integerAmountSchema }).strict(),
@@ -143,7 +168,7 @@ export const scheduleSchema = z.object({
 export const listSchedulesInputSchema = z.object({
   accountId: opaqueIdSchema.optional(), completed: z.boolean().optional(),
   limit: z.number().int().min(1).max(MAX_SCHEDULE_RESULTS).default(DEFAULT_SCHEDULE_RESULTS),
-  offset: z.number().int().min(0).max(MAX_SCHEDULE_OFFSET).default(0)
+  offset: z.number().int().min(DEFAULT_PAGINATION_OFFSET).max(MAX_SCHEDULE_OFFSET).default(DEFAULT_PAGINATION_OFFSET)
 }).strict().describe('Bounded schedule list filters and pagination.');
 export const listSchedulesOutputSchema = z.object({
   schedules: z.array(scheduleSchema),
@@ -155,12 +180,12 @@ export const getScheduleOutputSchema = z.object({ schedule: scheduleSchema }).st
 
 const scheduleDraftShape = {
   name: entityNameSchema.optional(), accountId: opaqueIdSchema, payeeId: opaqueIdSchema.nullable().optional(),
-  amount: scheduleAmountSchema, date: scheduleDateSchema, postsTransaction: z.boolean()
+  amount: scheduleAmountSchema, date: scheduleDateInputSchema, postsTransaction: z.boolean()
 };
 export const createScheduleInputSchema = z.object(scheduleDraftShape).strict().describe('Supported schedule creation fields.');
 export const updateScheduleInputSchema = z.object({
   scheduleId: opaqueIdSchema, name: entityNameSchema.optional(), accountId: opaqueIdSchema.optional(), payeeId: opaqueIdSchema.nullable().optional(),
-  amount: scheduleAmountSchema.optional(), date: scheduleDateSchema.optional(), postsTransaction: z.boolean().optional()
+  amount: scheduleAmountSchema.optional(), date: scheduleDateInputSchema.optional(), postsTransaction: z.boolean().optional()
 }).strict().refine(value => Object.keys(value).some(key => key !== 'scheduleId'), 'At least one editable field is required.').describe('Non-empty supported schedule update.');
 export const deleteScheduleInputSchema = z.object({ scheduleId: opaqueIdSchema, confirmDestructive: z.literal(true) }).strict().describe('Confirmed schedule deletion.');
 export const scheduleMutationOutputSchema = z.object({
@@ -170,7 +195,8 @@ export const scheduleDeletionOutputSchema = z.object({
   success: z.literal(true), deletedScheduleId: opaqueIdSchema, deletedScheduleName: z.string().nullable(), linkedTransactionIds: z.array(opaqueIdSchema), historicalTransactionsPreserved: z.literal(true)
 }).strict().describe('Verified schedule deletion and historical-transaction preservation.');
 
-const uniqueSummaryIds = z.array(opaqueIdSchema).min(1).max(250).refine(values => new Set(values).size === values.length, 'Identifiers must be unique.');
+const uniqueSummaryIds = z.array(opaqueIdSchema).min(1).max(MAX_SUMMARY_SCOPE_IDS)
+  .refine(values => new Set(values).size === values.length, 'Identifiers must be unique.');
 const summaryScopeShape = {
   accountIds: uniqueSummaryIds.optional(), categoryIds: uniqueSummaryIds.optional(), categoryGroupIds: uniqueSummaryIds.optional(),
   includeOffbudget: z.boolean().default(false), topPayeeLimit: z.number().int().min(1).max(MAX_TOP_PAYEE_RESULTS).default(DEFAULT_TOP_PAYEE_RESULTS)
@@ -306,7 +332,7 @@ export const searchTransactionsInputSchema = z.object({
     'payee_asc', 'payee_desc', 'category_asc', 'category_desc'
   ]).default('date_desc'),
   limit: z.number().int().min(1).max(MAX_TRANSACTION_SEARCH_RESULTS).default(DEFAULT_TRANSACTION_SEARCH_RESULTS),
-  offset: z.number().int().min(0).max(MAX_TRANSACTION_SEARCH_OFFSET).default(0),
+  offset: z.number().int().min(DEFAULT_PAGINATION_OFFSET).max(MAX_TRANSACTION_SEARCH_OFFSET).default(DEFAULT_PAGINATION_OFFSET),
   includeTotals: z.boolean().default(false)
 }).strict().superRefine((value, context) => {
   const start = Date.parse(`${value.startDate}T00:00:00Z`);
@@ -356,7 +382,7 @@ export const importTransactionsInputSchema = z.object({
   defaultCleared: z.boolean().optional(),
   reimportDeleted: z.boolean().optional(),
   expectedPreviewFingerprint: z.string().regex(/^v1:[a-f0-9]{64}$/, 'Expected a versioned SHA-256 preview fingerprint.').optional()
-}).strict().describe('Target account and one to 500 idempotent import items.');
+}).strict().describe(`Target account and one to ${MAX_IMPORT_BATCH} idempotent import items.`);
 
 export const importTransactionsOutputSchema = z.object({
   added: z.array(opaqueIdSchema),
@@ -416,7 +442,7 @@ export const bulkUpdateTransactionsInputSchema = z.object({
   if (new Set(ids).size !== ids.length) context.addIssue({
     code: 'custom', path: ['items'], message: 'Bulk transaction IDs must be unique.'
   });
-}).describe('One to 100 unique heterogeneous desired-state transaction updates; dry-run defaults to true.');
+}).describe(`One to ${MAX_BULK_TRANSACTION_UPDATES} unique heterogeneous desired-state transaction updates; dry-run defaults to true.`);
 
 const bulkPlanItemSchema = z.object({
   transactionId: opaqueIdSchema,
@@ -516,7 +542,7 @@ const searchTransferBase = z.object({
   ...magnitudeBounds,
   sort: transferSortSchema.default('date_desc'),
   limit: z.number().int().min(1).max(MAX_TRANSACTION_SEARCH_RESULTS).default(DEFAULT_TRANSACTION_SEARCH_RESULTS),
-  offset: z.number().int().min(0).max(MAX_TRANSACTION_SEARCH_OFFSET).default(0)
+  offset: z.number().int().min(DEFAULT_PAGINATION_OFFSET).max(MAX_TRANSACTION_SEARCH_OFFSET).default(DEFAULT_PAGINATION_OFFSET)
 }).strict();
 function validateBoundedRangeAndMagnitude(value: { startDate: string; endDate: string; minMagnitude?: number | undefined; maxMagnitude?: number | undefined }, context: z.core.$RefinementCtx) {
   const days = Math.floor((Date.parse(`${value.endDate}T00:00:00Z`) - Date.parse(`${value.startDate}T00:00:00Z`)) / 86_400_000) + 1;
@@ -567,7 +593,7 @@ export const createTransferOutputSchema = z.object({
 }).strict().describe('Exact transfer plan and verified creation phase evidence.');
 
 const diagnosticBase = searchTransferBase.extend({
-  dateWindowDays: z.number().int().min(0).max(7).default(3)
+  dateWindowDays: z.number().int().min(0).max(MAX_DIAGNOSTIC_WINDOW_DAYS).default(DEFAULT_DIAGNOSTIC_WINDOW_DAYS)
 });
 const diagnosticPageSchema = z.object({
   limit: z.number().int().positive(), offset: z.number().int().nonnegative(), returned: z.number().int().nonnegative()
@@ -579,13 +605,15 @@ const candidateBase = {
 export const findPossibleTransfersInputSchema = diagnosticBase.extend({
   classification: z.enum(['any', 'UNIQUE', 'AMBIGUOUS']).default('any')
 }).superRefine(validateBoundedRangeAndMagnitude).describe('Bounded read-only possible-transfer diagnostic request.');
+export const transferCandidateSchema = z.object({
+  ...candidateBase,
+  classification: z.enum(['UNIQUE', 'AMBIGUOUS']),
+  leftCandidateCount: z.number().int().positive(),
+  rightCandidateCount: z.number().int().positive(),
+  reasonCodes: z.array(z.enum(['OPPOSITE_AMOUNT', 'SAME_DATE', 'DATE_WITHIN_WINDOW']))
+}).strict();
 export const findPossibleTransfersOutputSchema = z.object({
-  candidates: z.array(z.object({
-    ...candidateBase,
-    classification: z.enum(['UNIQUE', 'AMBIGUOUS']),
-    leftCandidateCount: z.number().int().positive(), rightCandidateCount: z.number().int().positive(),
-    reasonCodes: z.array(z.enum(['OPPOSITE_AMOUNT', 'SAME_DATE', 'DATE_WITHIN_WINDOW']))
-  }).strict()),
+  candidates: z.array(transferCandidateSchema),
   counts: z.object({ matched: z.number().int().nonnegative(), unique: z.number().int().nonnegative(), ambiguous: z.number().int().nonnegative() }).strict(),
   page: diagnosticPageSchema
 }).strict().describe('Possible unlinked transfer candidates with graph classification and complete counts.');
@@ -771,8 +799,9 @@ export const copyBudgetInputSchema = z.object({
   includeCarryover: z.boolean().optional().default(false),
   includeHidden: z.boolean().optional().default(false),
   confirmOverwrite: z.boolean().optional().default(false),
-  differenceLimit: budgetResultLimitSchema.optional().default(DEFAULT_BUDGET_CATEGORY_RESULTS),
-  maxChanges: budgetResultLimitSchema.optional().default(500)
+  differenceLimit: z.number().int().min(1).max(MAX_BUDGET_COPY_DIFFERENCE_RESULTS)
+    .optional().default(DEFAULT_BUDGET_COPY_DIFFERENCE_RESULTS),
+  maxChanges: z.number().int().min(1).max(MAX_BUDGET_COPY_CHANGES).optional().default(MAX_BUDGET_COPY_CHANGES)
 }).strict().refine(value => value.sourceMonth !== value.targetMonth, {
   path: ['targetMonth'], message: 'sourceMonth and targetMonth must be different.'
 }).describe('Bounded budget copy request; defaults to a fill-empty dry run without carryover or hidden categories.');
@@ -996,6 +1025,7 @@ export const payeeMergeImpactSchema = z.object({
 
 export const mergePayeesInputSchema = z.object({
   sourcePayeeIds: z.array(opaqueIdSchema).min(1, 'At least one source payee is required.')
+    .max(MAX_PAYEE_MERGE_SOURCES, `At most ${MAX_PAYEE_MERGE_SOURCES} source payees may be merged at once.`)
     .refine(ids => new Set(ids).size === ids.length, 'Source payee identifiers must be unique.'),
   targetPayeeId: opaqueIdSchema,
   confirmDestructive: z.literal(true, 'confirmDestructive must be true.')
@@ -1019,7 +1049,11 @@ const textScalarOps = z.enum(['is', 'isNot', 'contains', 'doesNotContain', 'matc
 
 function idCondition(field: 'account' | 'category' | 'category_group' | 'payee') {
   const scalar = z.object({ field: z.literal(field), op: idScalarOps, value: opaqueIdSchema }).strict();
-  const list = z.object({ field: z.literal(field), op: idListOps, value: z.array(opaqueIdSchema).min(1) }).strict();
+  const list = z.object({
+    field: z.literal(field),
+    op: idListOps,
+    value: z.array(opaqueIdSchema).min(1).max(MAX_RULE_LIST_VALUES)
+  }).strict();
   const accountBudget = z.object({
     field: z.literal('account'),
     op: z.enum(['onBudget', 'offBudget']),
@@ -1030,7 +1064,11 @@ function idCondition(field: 'account' | 'category' | 'category_group' | 'payee')
 
 const importedPayeeConditionSchema = z.union([
   z.object({ field: z.literal('imported_payee'), op: textScalarOps, value: boundedTextSchema.min(1) }).strict(),
-  z.object({ field: z.literal('imported_payee'), op: idListOps, value: z.array(boundedTextSchema.min(1)).min(1) }).strict()
+  z.object({
+    field: z.literal('imported_payee'),
+    op: idListOps,
+    value: z.array(boundedTextSchema.min(1)).min(1).max(MAX_RULE_LIST_VALUES)
+  }).strict()
 ]);
 const notesConditionSchema = z.object({
   field: z.literal('notes'),
@@ -1146,16 +1184,16 @@ export const ruleOutputSchema = z.object({ rule: ruleSchema }).strict().describe
 export const createRuleInputSchema = z.object({
   stage: ruleStageSchema,
   conditionsOp: ruleConditionsOpSchema,
-  conditions: z.array(writableRuleConditionSchema).min(1, 'At least one condition is required.'),
-  actions: z.array(writableRuleActionSchema).min(1, 'At least one action is required.')
+  conditions: z.array(writableRuleConditionSchema).min(1, 'At least one condition is required.').max(MAX_RULE_CONDITIONS),
+  actions: z.array(writableRuleActionSchema).min(1, 'At least one action is required.').max(MAX_RULE_ACTIONS)
 }).strict().describe('Complete supported rule authoring request.');
 
 export const updateRuleInputSchema = z.object({
   ruleId: opaqueIdSchema,
   stage: ruleStageSchema.optional(),
   conditionsOp: ruleConditionsOpSchema.optional(),
-  conditions: z.array(writableRuleConditionSchema).min(1, 'Conditions must not be empty.').optional(),
-  actions: z.array(writableRuleActionSchema).min(1, 'Actions must not be empty.').optional()
+  conditions: z.array(writableRuleConditionSchema).min(1, 'Conditions must not be empty.').max(MAX_RULE_CONDITIONS).optional(),
+  actions: z.array(writableRuleActionSchema).min(1, 'Actions must not be empty.').max(MAX_RULE_ACTIONS).optional()
 }).strict().refine(value => value.stage !== undefined || value.conditionsOp !== undefined || value.conditions !== undefined || value.actions !== undefined, {
   message: 'At least one permitted rule update field is required.'
 }).describe('Rule identifier and one or more allowlisted desired-state changes.');

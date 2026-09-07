@@ -7,9 +7,17 @@ The server SHALL register exactly the 62 tools captured by the immutable 0.7.0 c
 - **WHEN** a compatible MCP client requests the final tool list
 - **THEN** exactly the 62 baseline names appear once with complete schemas, descriptions, and matching annotations regardless of list order
 
+#### Scenario: Client lists v0.7.0 tools
+- **WHEN** a compatible MCP client requests the tool list
+- **THEN** all 62 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
+
+#### Scenario: Client lists v0.6.0 tools
+- **WHEN** a compatible MCP client requests the tool list
+- **THEN** all 53 named tools are present with descriptions and declared strict input and output schemas, regardless of list order
+
 #### Scenario: Existing v0.7.0 client
 - **WHEN** a client invokes any baseline tool with a request valid in 0.7.0
-- **THEN** the request and compatible response remain supported under default 1.0.0 operational modes
+- **THEN** the request and compatible response remain supported under default 1.0.0 operational modes unless it exceeds one of the reviewed safety ceilings for an array that was unbounded in v0.7.0
 
 #### Scenario: No unsupported or artificial aliases
 - **WHEN** the 1.0.0 tool surface is inspected

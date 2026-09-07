@@ -15,6 +15,18 @@ The project SHALL report version `1.0.0` consistently in package metadata, lockf
 - **WHEN** locked dependencies are installed for release acceptance
 - **THEN** the installed `@actual-app/api` version equals `26.8.1` without a range or implicit upgrade
 
+#### Scenario: Production start
+- **WHEN** dependencies are installed and the project has been built
+- **THEN** `npm start` launches the v1.0.0 MCP stdio process from `dist/index.js`
+
+#### Scenario: Type and coverage validation
+- **WHEN** `npm run typecheck` or `npm run test:coverage` is executed
+- **THEN** TypeScript is checked without emission or coverage is produced through the supported command
+
+#### Scenario: SDK version inspection
+- **WHEN** package and lock metadata are inspected
+- **THEN** `@actual-app/api` remains pinned exactly to `26.8.1`
+
 ## ADDED Requirements
 
 ### Requirement: Safe release check

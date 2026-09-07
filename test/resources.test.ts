@@ -107,4 +107,22 @@ describe('real-test exact-ID resource registry', () => {
     expect(verifyTransactionsAbsent).toHaveBeenCalledWith(['side-c', 'side-d']);
     expect(registry.snapshot()).toEqual([]);
   });
+
+  it('cleans registered exact IDs from finally after a forced mid-workflow failure', async () => {
+    const registry = new ResourceRegistry();
+    registry.register('transaction', 'created-before-failure', 'Temporary transaction');
+    const transaction = vi.fn().mockResolvedValue(undefined);
+    const noop = vi.fn().mockResolvedValue(undefined);
+
+    await expect((async () => {
+      try {
+        throw new Error('forced assertion failure after registration');
+      } finally {
+        await registry.cleanup({ transaction, schedule: noop, rule: noop, payee: noop, category: noop, categoryGroup: noop, account: noop });
+      }
+    })()).rejects.toThrow('forced assertion failure');
+
+    expect(transaction).toHaveBeenCalledWith({ kind: 'transaction', id: 'created-before-failure', name: 'Temporary transaction' });
+    expect(registry.snapshot()).toEqual([]);
+  });
 });

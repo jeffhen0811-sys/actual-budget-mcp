@@ -1,7 +1,8 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createLogger } from '../src/logger.js';
-import { createMcpServer, TOOL_NAMES, V040_TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
+import { createMcpServer, TOOL_NAMES, type ToolRuntime } from '../src/mcp/server.js';
+import { TOOL_DEFINITIONS, annotationsFor } from '../src/mcp/tool-definitions.js';
 import { PublicError } from '../src/errors.js';
 
 const budgetCategoryFixture = {
@@ -135,7 +136,7 @@ function fakeRuntime(): ToolRuntime {
     getMonthSummary: vi.fn().mockResolvedValue({ month: '2026-08', ledger: { source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, incomeAmount: 0, expenseAmount: 0, netAmount: 0, transactionCount: 0, incomeTransactionCount: 0, expenseTransactionCount: 0, categorizedCount: 0, uncategorizedCount: 0, uncategorizedIncomeAmount: 0, uncategorizedExpenseAmount: 0, incomeCategoryBreakdown: [], expenseCategoryBreakdown: [], expenseGroupBreakdown: [], topIncomePayees: [], topExpensePayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }, budget: { available: true, source: 'official-getBudgetMonth', data: budgetMonthFixture } }),
     getSpendingSummary: vi.fn().mockResolvedValue({ source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, netExpenseAmount: 0, transactionCount: 0, uncategorizedExpenseAmount: 0, categoryBreakdown: [], groupBreakdown: [], topPayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }),
     getIncomeSummary: vi.fn().mockResolvedValue({ source: 'fixed-actualql-ledger', scope: { startDate: '2026-08-01', endDate: '2026-08-31', accountIds: ['a1'], includeOffbudget: false }, netIncomeAmount: 0, transactionCount: 0, uncategorizedIncomeAmount: 0, categoryBreakdown: [], topPayees: [], topPayeeLimit: 10, exclusions: { transfers: true, startingBalances: true, splitParents: true } }),
-    runtimeStatus: vi.fn().mockResolvedValue({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true, server: 'http://actual.local:5006', uptimeMs: 1, modes: { readOnly: false, allowDestructive: true, effectiveWriteAllowed: true }, cache: { configured: true, locked: true }, queue: { queuedCount: 0 }, syncTelemetry: {}, telemetryScope: 'mcp-initiated-syncs-only', unavailableMetadata: ['initialFullSync', 'sdkInternalScheduleServiceRuns'] })
+    runtimeStatus: vi.fn().mockResolvedValue({ mcpVersion: '1.0.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true, server: 'http://actual.local:5006', uptimeMs: 1, modes: { readOnly: false, allowDestructive: true, effectiveWriteAllowed: true }, cache: { configured: true, locked: true }, queue: { queuedCount: 0 }, syncTelemetry: {}, telemetryScope: 'mcp-initiated-syncs-only', unavailableMetadata: ['initialFullSync', 'sdkInternalScheduleServiceRuns'] })
   };
 }
 
@@ -157,60 +158,22 @@ describe('MCP server contract', () => {
     await server.close();
   });
 
-  it('registers exactly sixty-two tools while preserving all forty-two v0.4.0 tools with accurate annotations', async () => {
+  it('registers exactly sixty-two frozen tools with authoritative metadata and schemas', async () => {
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([...TOOL_NAMES].sort());
     expect(tools).toHaveLength(62);
-    expect(V040_TOOL_NAMES).toHaveLength(42);
-    expect(V040_TOOL_NAMES.every(name => tools.some(tool => tool.name === name))).toBe(true);
     for (const tool of tools) {
+      const definition = TOOL_DEFINITIONS.find(candidate => candidate.name === tool.name)!;
       expect(tool.title).toMatch(/^[\x20-\x7E]+$/);
       expect(tool.description).toMatch(/^[\x20-\x7E]+$/);
+      expect(tool.title).toBe(definition.title);
+      expect(tool.description).toBe(definition.description);
+      expect(tool.annotations).toMatchObject(annotationsFor(definition));
       expect(tool.inputSchema.type).toBe('object');
       expect(tool.outputSchema?.type).toBe('object');
       expect(tool.inputSchema.description).toEqual(expect.any(String));
       expect(tool.outputSchema?.description, tool.name).toEqual(expect.any(String));
     }
-    expect(tools.find(tool => tool.name === 'actual_list_accounts')?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.find(tool => tool.name === 'actual_sync')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: true });
-    expect(tools.find(tool => tool.name === 'actual_delete_transaction')?.annotations?.destructiveHint).toBe(true);
-    expect(tools.find(tool => tool.name === 'actual_delete_transaction')?.description).toContain('DESTRUCTIVE OPERATION');
-    for (const name of ['actual_delete_account', 'actual_delete_category_group', 'actual_delete_category']) {
-      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
-      expect(tools.find(tool => tool.name === name)?.description).toContain('DESTRUCTIVE OPERATION');
-    }
-    expect(tools.find(tool => tool.name === 'actual_create_payee')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: true });
-    expect(tools.find(tool => tool.name === 'actual_create_rule')?.annotations).toMatchObject({ destructiveHint: false, idempotentHint: false });
-    for (const name of ['actual_delete_payee', 'actual_merge_payees', 'actual_delete_rule']) {
-      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: false });
-    }
-    for (const name of ['actual_list_budget_months', 'actual_get_budget_month', 'actual_get_budget_summary']) {
-      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({ readOnlyHint: true, destructiveHint: false, idempotentHint: true });
-    }
-    expect(tools.find(tool => tool.name === 'actual_hold_budget_for_next_month')?.annotations).toMatchObject({
-      readOnlyHint: false, destructiveHint: false, idempotentHint: false
-    });
-    expect(tools.find(tool => tool.name === 'actual_copy_budget_month')?.annotations).toMatchObject({
-      readOnlyHint: false, destructiveHint: true, idempotentHint: true
-    });
-    for (const name of ['actual_get_transaction', 'actual_search_transactions', 'actual_preview_import']) {
-      expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({
-        readOnlyHint: true, destructiveHint: false, idempotentHint: true
-      });
-    }
-    for (const name of [
-      'actual_list_transfer_payees', 'actual_get_transfer', 'actual_search_transfers',
-      'actual_find_possible_transfers', 'actual_find_possible_duplicates', 'actual_get_account_reconciliation'
-    ]) expect(tools.find(tool => tool.name === name)?.annotations).toMatchObject({
-      readOnlyHint: true, destructiveHint: false, idempotentHint: true
-    });
-    expect(tools.find(tool => tool.name === 'actual_create_transfer')?.annotations).toMatchObject({
-      readOnlyHint: false, destructiveHint: false, idempotentHint: false
-    });
-    expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.annotations).toMatchObject({
-      readOnlyHint: false, destructiveHint: false, idempotentHint: true
-    });
-    expect(tools.find(tool => tool.name === 'actual_bulk_update_transactions')?.description).toContain('dry-run mode by default');
     expect(tools.some(tool => ['actual_run_rules', 'actual_preview_rule'].includes(tool.name))).toBe(false);
     expect(tools.some(tool => /reorder|account_group|actualql|raw_query|run_query|generic_crud|search_by_|bulk_update_(?:category|payee|notes|cleared)/i.test(tool.name))).toBe(false);
   });
@@ -313,38 +276,33 @@ describe('MCP server contract', () => {
   });
 
   it('rejects every structural delete without literal confirmation before runtime execution', async () => {
-    vi.mocked(runtime.deletePayee).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_delete_payee', false));
-    vi.mocked(runtime.mergePayees).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_merge_payees', false));
-    vi.mocked(runtime.deleteRule).mockRejectedValue(new PublicError('DESTRUCTIVE_CONFIRMATION_REQUIRED', 'Confirmation required.', 'actual_delete_rule', false));
     const calls = [
       ['actual_delete_account', { accountId: 'a2' }],
       ['actual_delete_category_group', { groupId: 'g2' }],
       ['actual_delete_category', { categoryId: 'c2' }],
       ['actual_delete_payee', { payeeId: 'p2' }],
       ['actual_merge_payees', { sourcePayeeIds: ['p2'], targetPayeeId: 'p1' }],
-      ['actual_delete_rule', { ruleId: 'r2' }]
+      ['actual_delete_rule', { ruleId: 'r2' }],
+      ['actual_delete_schedule', { scheduleId: 's1' }],
+      ['actual_delete_transaction', { transactionId: 't1' }]
     ] as const;
-    for (const [name, args] of calls) {
-      const result = await client.callTool({ name, arguments: args });
-      expect(result.isError, name).toBe(true);
-      expect(result.structuredContent, name).toBeDefined();
+    for (const [name, baseArguments] of calls) {
+      for (const args of [baseArguments, { ...baseArguments, confirmDestructive: false }]) {
+        const result = await client.callTool({ name, arguments: args });
+        expect(result.isError, name).toBe(true);
+        expect(result.structuredContent, name).toMatchObject({
+          error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED', operation: name, retryable: false }
+        });
+      }
     }
     expect(runtime.deleteAccount).not.toHaveBeenCalled();
     expect(runtime.deleteCategoryGroup).not.toHaveBeenCalled();
     expect(runtime.deleteCategory).not.toHaveBeenCalled();
-    expect(runtime.deletePayee).toHaveBeenCalledWith('p2', false);
-    expect(runtime.mergePayees).toHaveBeenCalledWith(['p2'], 'p1', false);
-    expect(runtime.deleteRule).toHaveBeenCalledWith('r2', false);
-
-    for (const [name, args] of [
-      ['actual_delete_payee', { payeeId: 'p2', confirmDestructive: false }],
-      ['actual_merge_payees', { sourcePayeeIds: ['p2'], targetPayeeId: 'p1', confirmDestructive: false }],
-      ['actual_delete_rule', { ruleId: 'r2', confirmDestructive: false }]
-    ] as const) {
-      const result = await client.callTool({ name, arguments: args });
-      expect(result.isError, name).toBe(true);
-      expect(result.structuredContent, name).toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
-    }
+    expect(runtime.deletePayee).not.toHaveBeenCalled();
+    expect(runtime.mergePayees).not.toHaveBeenCalled();
+    expect(runtime.deleteRule).not.toHaveBeenCalled();
+    expect(runtime.deleteSchedule).not.toHaveBeenCalled();
+    expect(runtime.deleteTransaction).not.toHaveBeenCalled();
   });
 
   it('rejects malformed rule calls and unavailable run or preview tools, then continues operating', async () => {

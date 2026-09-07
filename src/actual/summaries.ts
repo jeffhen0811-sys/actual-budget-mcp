@@ -1,6 +1,13 @@
 import { q } from '@actual-app/api';
 import { PublicError } from '../errors.js';
-import { DEFAULT_TOP_PAYEE_RESULTS, MAX_DATE_RANGE_DAYS, MAX_TOP_PAYEE_RESULTS, isCalendarDate } from '../schemas.js';
+import {
+  DEFAULT_TOP_PAYEE_RESULTS,
+  isCalendarDate,
+  LEDGER_QUERY_SENTINEL_LIMIT,
+  MAX_DATE_RANGE_DAYS,
+  MAX_LEDGER_SCAN_RESULTS,
+  MAX_TOP_PAYEE_RESULTS
+} from '../schemas.js';
 import type { AdapterTransactionQuery } from './adapter.js';
 
 export interface SummaryScope {
@@ -95,7 +102,7 @@ export function compileSummaryLedgerQuery(scopeInput: SummaryScope): AdapterTran
       'transfer_id', 'starting_balance_flag', 'is_parent'
     ])
     .orderBy([{ id: 'asc' }])
-    .limit(5001)
+    .limit(LEDGER_QUERY_SENTINEL_LIMIT)
     .options({ splits: 'inline' });
 }
 
@@ -104,7 +111,9 @@ export function parseSummaryRows(value: unknown, operation: string): SummaryLedg
     throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an unsupported summary query envelope.', operation, false);
   }
   const rows = (value as { data: unknown[] }).data;
-  if (rows.length > 5000) throw new PublicError('RESULT_TOO_LARGE', 'The summary query exceeds 5000 effective transactions.', operation, false);
+  if (rows.length > MAX_LEDGER_SCAN_RESULTS) throw new PublicError(
+    'RESULT_TOO_LARGE', `The summary query exceeds ${MAX_LEDGER_SCAN_RESULTS} effective transactions.`, operation, false
+  );
   return rows.map(row => {
     if (!row || typeof row !== 'object' || Array.isArray(row)) throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an unsupported summary row.', operation, false);
     const item = row as Record<string, unknown>;

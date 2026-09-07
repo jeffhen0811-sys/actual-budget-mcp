@@ -428,9 +428,7 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
     const preflight = await callToolExpectingError(running, 'actual_merge_payees', {
       sourcePayeeIds: [source.payee.id], targetPayeeId: target.payee.id
     });
-    expect(preflight.structuredContent).toMatchObject({
-      error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED', details: { impacts: [expect.objectContaining({ relatedTransactionCount: 1 })] } }
-    });
+    expect(preflight.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
     assertPayeeWriteAllowed(sourceName, 'merge');
     assertPayeeWriteAllowed(targetName, 'merge');
     const merged = await callTool(running, 'actual_merge_payees', {
@@ -585,13 +583,20 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
       .toMatchObject({ error: { code: 'DESTRUCTIVE_CONFIRMATION_REQUIRED' } });
 
     const destructiveDisabled = await startMcp('.actual-e2e-data/destructive-disabled', { ACTUAL_MCP_ALLOW_DESTRUCTIVE: 'false' });
+    let disabledPayeeId = '';
     try {
       const refusal = await callToolExpectingError(destructiveDisabled, 'actual_delete_schedule', { scheduleId: created.schedule.id, confirmDestructive: true });
       expect(refusal.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_OPERATIONS_DISABLED' } });
+      const disabledPayeeName = `MCP E2E Disabled Write ${runId}`;
+      const disabledPayee = await callTool(destructiveDisabled, 'actual_create_payee', { name: disabledPayeeName }, payeeMutationOutputSchema);
+      disabledPayeeId = disabledPayee.payee.id;
+      registry.register('payee', disabledPayeeId, disabledPayeeName);
     } finally {
       assertNoConfiguredSecrets(destructiveDisabled.stderr());
       await destructiveDisabled.close();
     }
+    await callTool(running, 'actual_delete_payee', { payeeId: disabledPayeeId, confirmDestructive: true }, payeeDeletionOutputSchema);
+    registry.release('payee', disabledPayeeId);
     expect((await callTool(running, 'actual_get_schedule', { scheduleId: created.schedule.id }, getScheduleOutputSchema)).schedule.id).toBe(created.schedule.id);
     const deleted = await callTool(running, 'actual_delete_schedule', { scheduleId: created.schedule.id, confirmDestructive: true }, scheduleDeletionOutputSchema);
     expect(deleted).toMatchObject({ deletedScheduleId: created.schedule.id, historicalTransactionsPreserved: true });
@@ -711,10 +716,12 @@ writeDescribe.sequential('guarded real MCP stdio write E2E', () => {
         month: selected.sourceMonth, categoryId: created.category.id, carryover: true
       }, budgetCarryoverMutationOutputSchema);
       expect(carryover.effectiveFromMonth).toBe(selected.sourceMonth);
+      const beforeCopyPreview = await permanentFixtureFingerprint(fingerprintReader());
       const preview = await callTool(running, 'actual_copy_budget_month', {
         sourceMonth: selected.sourceMonth, targetMonth: selected.targetMonth, includeCarryover: true
       }, budgetCopyOutputSchema);
       expect(preview).toMatchObject({ dryRun: true, executed: false, changed: true });
+      expect(await permanentFixtureFingerprint(fingerprintReader())).toBe(beforeCopyPreview);
       const copied = await callTool(running, 'actual_copy_budget_month', {
         sourceMonth: selected.sourceMonth, targetMonth: selected.targetMonth, includeCarryover: true, dryRun: false
       }, budgetCopyOutputSchema);

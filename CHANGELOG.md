@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## 1.0.0 - 2026-09-07
+
+### Foundation
+
+- Froze the compatible 62-tool public contract and generated inventory, limits, error, idempotency, synchronization, and public-model references.
+- Kept `@actual-app/api` pinned exactly to 26.8.1.
+
+### Domains
+
+- Revalidated transactions, imports, transfers, reconciliation, budgets, payees, rules, accounts, categories, schedules, summaries, and runtime status.
+
+### Security
+
+- Added exhaustive policy/schema threat coverage, stronger cleanup fingerprints, sanitized error/logging checks, and protocol resilience coverage.
+
+### Testing and operations
+
+- Added v1 contract, import, security, support, acceptance, Hermes, and performance documentation plus safe release checks.
+
+### Known limitations
+
+- No Pluggy/direct bank sync, cron, MCP HTTP transport, raw ActualQL/SQL/SQLite, manual rule execution/preview, transfer schedules, manual schedule posting, or reconciliation locking.
+- Real integration/E2E writes remain separately authorized and are required before production readiness.
+
 ## 0.7.0 - 2026-09-03
 
 ### Added

@@ -12,11 +12,30 @@ describe('central capability policy and telemetry foundations', () => {
     expect(() => loadOperationalConfig({ ACTUAL_MCP_READ_ONLY: '1' })).toThrow('ACTUAL_MCP_READ_ONLY');
   });
 
-  it('classifies every tool exactly once and preserves the existing 32/8 guard counts', () => {
+  it('classifies the full registry and pins reviewed idempotency values', () => {
     expect(TOOL_REGISTRY).toHaveLength(62);
     expect(new Set(TOOL_REGISTRY.map(item => item.name)).size).toBe(62);
-    expect(TOOL_REGISTRY.slice(0, 53).filter(item => item.capability !== 'read')).toHaveLength(32);
-    expect(TOOL_REGISTRY.slice(0, 53).filter(item => item.capability === 'destructive')).toHaveLength(8);
+    expect(TOOL_REGISTRY.filter(item => item.capability === 'read')).toHaveLength(27);
+    expect(TOOL_REGISTRY.filter(item => item.capability !== 'read')).toHaveLength(35);
+    expect(TOOL_REGISTRY.filter(item => item.capability === 'destructive')).toHaveLength(9);
+    expect(TOOL_REGISTRY.filter(item => !item.idempotent).map(item => item.name).sort()).toEqual([
+      'actual_create_account',
+      'actual_create_category',
+      'actual_create_category_group',
+      'actual_create_rule',
+      'actual_create_schedule',
+      'actual_create_transfer',
+      'actual_delete_account',
+      'actual_delete_category',
+      'actual_delete_category_group',
+      'actual_delete_payee',
+      'actual_delete_rule',
+      'actual_delete_schedule',
+      'actual_delete_transaction',
+      'actual_hold_budget_for_next_month',
+      'actual_merge_payees',
+      'actual_update_transaction'
+    ]);
     for (const definition of TOOL_REGISTRY) expect(annotationsFor(definition)).toMatchObject({
       readOnlyHint: definition.capability === 'read', destructiveHint: definition.capability === 'destructive', idempotentHint: definition.idempotent
     });

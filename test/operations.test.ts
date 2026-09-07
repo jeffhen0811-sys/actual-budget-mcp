@@ -43,7 +43,7 @@ describe('installation, update, and public CI operations', () => {
 
   it('keeps public CI locked and independent of private Actual credentials', async () => {
     const workflow = await readFile('.github/workflows/ci.yml', 'utf8');
-    for (const command of ['npm ci', 'npm run typecheck', 'npm test', 'npm run test:contract', 'npm run build']) {
+    for (const command of ['npm ci', 'npm run release:check']) {
       expect(workflow).toContain(command);
     }
     expect(workflow).not.toMatch(/test:integration|test:e2e|ACTUAL_PASSWORD|ACTUAL_SYNC_ID/);
@@ -93,7 +93,7 @@ describe('installation, update, and public CI operations', () => {
     }
   });
 
-  it('fast-forwards an isolated v0.6.0 checkout to v0.7.0 while preserving ignored runtime sentinels', async () => {
+  it('fast-forwards an isolated v0.7.0 checkout to v1.0.0 while preserving ignored runtime sentinels', async () => {
     const root = await mkdtemp(join(tmpdir(), 'actual-update-contract-'));
     const run = promisify(execFile);
     const git = async (cwd: string, ...args: string[]) => run('git', args, { cwd });
@@ -107,12 +107,12 @@ describe('installation, update, and public CI operations', () => {
       await git(seed, 'config', 'user.email', 'contract@example.invalid');
       await git(seed, 'config', 'user.name', 'Contract Test');
       await writeFile(join(seed, '.gitignore'), '.env\ncache/\n.actual-test-data/\n.actual-e2e-data/\nhermes.yaml\ndist/\n');
-      await writeFile(join(seed, 'package.json'), '{"name":"fixture","version":"0.6.0"}\n');
-      await writeFile(join(seed, 'package-lock.json'), '{"name":"fixture","version":"0.6.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"0.6.0"}}}\n');
+      await writeFile(join(seed, 'package.json'), '{"name":"fixture","version":"0.7.0"}\n');
+      await writeFile(join(seed, 'package-lock.json'), '{"name":"fixture","version":"0.7.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"0.7.0"}}}\n');
       await writeFile(join(seed, 'update.sh'), await readFile('update.sh', 'utf8'));
       await chmod(join(seed, 'update.sh'), 0o755);
       await git(seed, 'add', '.');
-      await git(seed, 'commit', '-m', 'v0.6.0');
+      await git(seed, 'commit', '-m', 'v0.7.0');
       await git(seed, 'branch', '-M', 'main');
       await git(seed, 'remote', 'add', 'origin', origin);
       await git(seed, 'push', '-u', 'origin', 'main');
@@ -127,10 +127,10 @@ describe('installation, update, and public CI operations', () => {
       await writeFile(join(client, '.actual-e2e-data', 'sentinel'), 'sentinel-e2e\n');
       await writeFile(join(client, 'hermes.yaml'), 'sentinel-hermes\n');
 
-      await writeFile(join(seed, 'package.json'), '{"name":"fixture","version":"0.7.0"}\n');
-      await writeFile(join(seed, 'package-lock.json'), '{"name":"fixture","version":"0.7.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"0.7.0"}}}\n');
+      await writeFile(join(seed, 'package.json'), '{"name":"fixture","version":"1.0.0"}\n');
+      await writeFile(join(seed, 'package-lock.json'), '{"name":"fixture","version":"1.0.0","lockfileVersion":3,"packages":{"":{"name":"fixture","version":"1.0.0"}}}\n');
       await git(seed, 'add', 'package.json', 'package-lock.json');
-      await git(seed, 'commit', '-m', 'v0.7.0');
+      await git(seed, 'commit', '-m', 'v1.0.0');
       await git(seed, 'push');
 
       const bin = join(root, 'bin');
@@ -140,7 +140,7 @@ describe('installation, update, and public CI operations', () => {
       await chmod(join(bin, 'npm'), 0o755);
       await run('bash', ['update.sh'], { cwd: client, env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, NPM_LOG: npmLog } });
 
-      expect(await readFile(join(client, 'package.json'), 'utf8')).toContain('"version":"0.7.0"');
+      expect(await readFile(join(client, 'package.json'), 'utf8')).toContain('"version":"1.0.0"');
       expect(await readFile(join(client, '.env'), 'utf8')).toBe('sentinel-env\n');
       expect(await readFile(join(client, 'cache', 'sentinel'), 'utf8')).toBe('sentinel-cache\n');
       expect(await readFile(join(client, '.actual-test-data', 'sentinel'), 'utf8')).toBe('sentinel-integration\n');

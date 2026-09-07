@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { PublicBudgetMonth } from '../../src/actual/budget.js';
 import { TOOL_NAMES } from '../../src/mcp/server.js';
 import {
   accountsOutputSchema,
@@ -29,6 +30,7 @@ import {
 } from '../../src/mcp/contracts.js';
 import { assertNoConfiguredSecrets, callTool, callToolExpectingError, type RunningMcp, startMcp } from './harness.js';
 import { CARD_TEST_ACCOUNT_NAME, loadRealTestEnvironment, REQUIRED_TEST_ACCOUNT_NAME, skipMessage } from '../real/env.js';
+import { permanentFixtureFingerprint } from '../real/fingerprint.js';
 
 const environment = await loadRealTestEnvironment();
 if (!environment.configured) console.warn(skipMessage(environment, 'MCP stdio E2E read suite'));
@@ -36,12 +38,31 @@ const realDescribe = environment.configured ? describe : describe.skip;
 
 realDescribe.sequential('real MCP stdio read E2E', () => {
   let running: RunningMcp;
+  let baselineFingerprint = '';
+
+  function fingerprintReader(target: RunningMcp) {
+    return {
+      listAccounts: async () => (await callTool(target, 'actual_list_accounts', {}, accountsOutputSchema)).accounts,
+      listCategories: async () => (await callTool(target, 'actual_list_categories', {}, categoriesOutputSchema)).categoryGroups,
+      listPayees: async () => (await callTool(target, 'actual_list_payees', {}, payeesOutputSchema)).payees,
+      listRules: async () => (await callTool(target, 'actual_list_rules', {}, rulesOutputSchema)).rules,
+      getTransactions: async (accountId: string, startDate: string, endDate: string) =>
+        (await callTool(target, 'actual_get_transactions', { accountId, startDate, endDate }, transactionsOutputSchema)).transactions,
+      listBudgetMonths: async () => callTool(target, 'actual_list_budget_months', {}, listBudgetMonthsOutputSchema),
+      getBudgetMonth: async (month: string) =>
+        await callTool(target, 'actual_get_budget_month', { month }, budgetMonthOutputSchema) as PublicBudgetMonth,
+      listSchedules: async (options?: { limit?: number; offset?: number }) =>
+        callTool(target, 'actual_list_schedules', options ?? {}, listSchedulesOutputSchema)
+    };
+  }
 
   beforeAll(async () => {
     running = await startMcp('.actual-e2e-data/read');
+    baselineFingerprint = await permanentFixtureFingerprint(fingerprintReader(running));
   });
 
   afterAll(async () => {
+    if (running) expect(await permanentFixtureFingerprint(fingerprintReader(running))).toBe(baselineFingerprint);
     await running?.close();
   });
 
@@ -136,7 +157,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     expect(spending.source).toBe('fixed-actualql-ledger');
     expect(income.source).toBe('fixed-actualql-ledger');
     const status = await callTool(running, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
-    expect(status).toMatchObject({ mcpVersion: '0.7.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
+    expect(status).toMatchObject({ mcpVersion: '1.0.0', sdkVersion: '26.8.1', connected: true, budgetLoaded: true });
     expect(JSON.stringify(status)).not.toContain(process.env.ACTUAL_SYNC_ID ?? '__missing__');
   });
 
@@ -144,6 +165,7 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
     const readOnly = await startMcp('.actual-e2e-data/read-only', {
       ACTUAL_MCP_READ_ONLY: 'true', ACTUAL_MCP_ALLOW_DESTRUCTIVE: 'false'
     });
+    const before = await permanentFixtureFingerprint(fingerprintReader(readOnly));
     try {
       expect((await callTool(readOnly, 'actual_list_accounts', {}, accountsOutputSchema)).accounts.length).toBeGreaterThan(0);
       for (const [name, args] of [
@@ -159,9 +181,43 @@ realDescribe.sequential('real MCP stdio read E2E', () => {
       }
       const status = await callTool(readOnly, 'actual_get_runtime_status', {}, runtimeStatusOutputSchema);
       expect(status.modes).toEqual({ readOnly: true, allowDestructive: false, effectiveWriteAllowed: false });
+      expect(await permanentFixtureFingerprint(fingerprintReader(readOnly))).toBe(before);
     } finally {
       assertNoConfiguredSecrets(readOnly.stderr());
       await readOnly.close();
+    }
+  });
+
+  it('survives compiled stdio validation and policy failures without leaving the runtime unhealthy', async () => {
+    const invalidCalls = [
+      ['actual_get_transaction', { transactionId: '' }],
+      ['actual_search_transactions', { startDate: '2026-09-02', endDate: '2026-09-01' }],
+      ['actual_search_transactions', { startDate: '2026-09-01', endDate: '2026-09-02', minAmount: 1.5 }],
+      ['actual_delete_transaction', { transactionId: 'missing-confirmation' }],
+      ['actual_create_schedule', {
+        accountId: 'invalid', amount: { type: 'exact', amount: -1 },
+        date: { type: 'recurring', frequency: 'monthly', start: '2026-09-01', interval: 1 }, postsTransaction: false
+      }],
+      ['actual_create_transfer', { fromAccountId: 'same', toAccountId: 'same', amount: 0, date: '2026-09-01' }],
+      ['actual_copy_budget_month', { sourceMonth: '2026-09', targetMonth: '2026-09' }]
+    ] as const;
+    for (const [name, args] of invalidCalls) {
+      await callToolExpectingError(running, name, args);
+      expect(await callTool(running, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+    }
+
+    const destructiveDisabled = await startMcp('.actual-e2e-data/destructive-disabled-read', { ACTUAL_MCP_ALLOW_DESTRUCTIVE: 'false' });
+    const before = await permanentFixtureFingerprint(fingerprintReader(destructiveDisabled));
+    try {
+      const result = await callToolExpectingError(destructiveDisabled, 'actual_delete_schedule', {
+        scheduleId: 'policy-short-circuit', confirmDestructive: true
+      });
+      expect(result.structuredContent).toMatchObject({ error: { code: 'DESTRUCTIVE_OPERATIONS_DISABLED' } });
+      expect(await callTool(destructiveDisabled, 'actual_health', {}, healthOutputSchema)).toMatchObject({ connected: true, budgetLoaded: true });
+      expect(await permanentFixtureFingerprint(fingerprintReader(destructiveDisabled))).toBe(before);
+    } finally {
+      assertNoConfiguredSecrets(destructiveDisabled.stderr());
+      await destructiveDisabled.close();
     }
   });
 

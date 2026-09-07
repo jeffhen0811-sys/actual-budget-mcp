@@ -4,7 +4,7 @@ Actual Budget MCP 0.7.0 has reached the intended functional scope, but its 62-to
 
 ## What Changes
 
-- Freeze the existing 62 unique tool names and the valid 0.7.0 input/output contract as the 1.0.0 compatibility baseline; preserve imperfect but established names rather than rename them.
+- Freeze the existing 62 unique tool names and the valid 0.7.0 input/output contract as the 1.0.0 compatibility baseline; preserve imperfect but established names rather than rename them. The only reviewed input tightening is a finite safety ceiling on the 17 previously unbounded array paths documented in `breaking-change-review-unbounded-input-arrays.md`.
 - Consolidate declarative tool metadata so discovery, capability policy, generated inventory, contract snapshots, and verification evidence cannot silently diverge.
 - Audit all inputs, outputs, nullability, canonical entity projections, MCP annotations, error codes, bounds, confirmations, dry-run behavior, idempotency, partial failure, synchronization, logging, and secret handling.
 - Expand generated policy and regression coverage across every mutation-capable and destructive tool, including protocol resilience, restart, cleanup recovery, and permanent-fixture integrity.

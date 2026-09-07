@@ -9,10 +9,15 @@ import { createLogger } from '../logger.js';
 import { errorMessage, redact } from '../redaction.js';
 import {
   DEFAULT_BUDGET_CATEGORY_RESULTS,
+  DEFAULT_BUDGET_COPY_DIFFERENCE_RESULTS,
+  DEFAULT_PAGINATION_OFFSET,
+  LEDGER_QUERY_SENTINEL_LIMIT,
   MAX_BUDGET_CATEGORY_RESULTS,
+  MAX_BUDGET_COPY_CHANGES,
+  MAX_BUDGET_COPY_DIFFERENCE_RESULTS,
+  MAX_LEDGER_SCAN_RESULTS,
   MAX_SCHEDULE_OFFSET,
-  MAX_SCHEDULE_RESULTS,
-  MAX_TRANSACTION_RESULTS
+  MAX_SCHEDULE_RESULTS
 } from '../schemas.js';
 import { ACTUAL_SDK_VERSION, MCP_VERSION } from '../version.js';
 import type {
@@ -190,7 +195,13 @@ export class ActualClient {
   getOperationalPolicy(): OperationalConfig { return { ...this.operationalConfig }; }
 
   private secrets(): Array<string | undefined> {
-    return [this.config?.password, this.config?.encryptionPassword];
+    return [
+      this.config?.password,
+      this.config?.encryptionPassword,
+      this.config?.syncId,
+      this.config?.dataDir,
+      this.config?.serverUrl
+    ];
   }
 
   private async acquireCacheLock(dataDir: string): Promise<void> {
@@ -406,10 +417,10 @@ export class ActualClient {
   getTransactions(accountId: string, startDate: string, endDate: string) {
     return this.run('actual_get_transactions', async () => {
       const transactions = await this.api.getTransactions(accountId, startDate, endDate);
-      if (transactions.length > MAX_TRANSACTION_RESULTS) {
+      if (transactions.length > MAX_LEDGER_SCAN_RESULTS) {
         throw new PublicError(
           'RESULT_TOO_LARGE',
-          `The result exceeds ${MAX_TRANSACTION_RESULTS} transactions. Request a narrower date range.`,
+          `The result exceeds ${MAX_LEDGER_SCAN_RESULTS} transactions. Request a narrower date range.`,
           'actual_get_transactions',
           false
         );
@@ -698,10 +709,10 @@ export class ActualClient {
       const includeCarryover = options.includeCarryover ?? false;
       const includeHidden = options.includeHidden ?? false;
       const confirmOverwrite = options.confirmOverwrite ?? false;
-      const differenceLimit = options.differenceLimit ?? DEFAULT_BUDGET_CATEGORY_RESULTS;
-      const maxChanges = options.maxChanges ?? MAX_BUDGET_CATEGORY_RESULTS;
-      if (!['fill-empty', 'overwrite'].includes(mode) || !Number.isSafeInteger(differenceLimit) || differenceLimit < 1 || differenceLimit > MAX_BUDGET_CATEGORY_RESULTS ||
-          !Number.isSafeInteger(maxChanges) || maxChanges < 1 || maxChanges > MAX_BUDGET_CATEGORY_RESULTS) {
+      const differenceLimit = options.differenceLimit ?? DEFAULT_BUDGET_COPY_DIFFERENCE_RESULTS;
+      const maxChanges = options.maxChanges ?? MAX_BUDGET_COPY_CHANGES;
+      if (!['fill-empty', 'overwrite'].includes(mode) || !Number.isSafeInteger(differenceLimit) || differenceLimit < 1 || differenceLimit > MAX_BUDGET_COPY_DIFFERENCE_RESULTS ||
+          !Number.isSafeInteger(maxChanges) || maxChanges < 1 || maxChanges > MAX_BUDGET_COPY_CHANGES) {
         throw new PublicError('INVALID_BUDGET_VALUE', 'Budget copy mode or bounds are invalid.', operation, false);
       }
       const months = await this.completeBudgetMonths(operation);
@@ -856,11 +867,11 @@ export class ActualClient {
       const seedRows = parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
         startDate: input.startDate,
         endDate: input.endDate,
-        limit: 5_001,
+        limit: LEDGER_QUERY_SENTINEL_LIMIT,
         includeSplitChildren: false
       })), operation);
-      if (seedRows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
-        'RESULT_LIMIT_EXCEEDED', 'Transfer search requires more than 5000 transaction rows.', operation, false
+      if (seedRows.length > MAX_LEDGER_SCAN_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', `Transfer search requires more than ${MAX_LEDGER_SCAN_RESULTS} transaction rows.`, operation, false
       );
       const eligibleSeeds = seedRows.filter(row => meaningfulId(row.transfer_id) !== null &&
         (!input.accountIds?.length || input.accountIds.includes(row.account)));
@@ -957,15 +968,23 @@ export class ActualClient {
       if (dryRun) return preview;
 
       const readDateRows = async () => parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
-        startDate: input.date, endDate: input.date, accountIds: [from.id, to.id], limit: 5_001, includeSplitChildren: false
+        startDate: input.date, endDate: input.date, accountIds: [from.id, to.id], limit: LEDGER_QUERY_SENTINEL_LIMIT, includeSplitChildren: false
       })), operation);
       const before = await readDateRows();
-      if (before.length > MAX_TRANSACTION_RESULTS) throw new PublicError('RESULT_LIMIT_EXCEEDED', 'Transfer creation discovery exceeds 5000 rows.', operation, false);
+      if (before.length > MAX_LEDGER_SCAN_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', `Transfer creation discovery exceeds ${MAX_LEDGER_SCAN_RESULTS} rows.`, operation, false
+      );
       let phase: 'preflight' | 'created_unverified' | 'pair_discovered' | 'side_updates_applied' | 'synchronized' | 'verified' = 'preflight';
       const knownIds: string[] = [];
       const partial = (message: string, cause: unknown) => new PublicError(
         'TRANSFER_CREATION_PARTIAL_STATE', message, operation, false,
-        { partialState: true, recoveryAction: 'actual_sync_then_exact_read', details: { phase, knownIds: [...knownIds] } }, { cause }
+        {
+          state: phase === 'synchronized' ? 'synchronized_but_unverified' : 'local_change_may_have_succeeded',
+          partialState: true,
+          recoveryAction: 'actual_sync_then_exact_read',
+          details: { phase, knownIds: [...knownIds] }
+        },
+        { cause }
       );
       try {
         const anchorSide = anchorIsFrom ? fromSide : toSide;
@@ -1035,11 +1054,11 @@ export class ActualClient {
       const rows = parseAqlRows(await this.api.aqlQuery(compileBoundedLeafTransactions({
         startDate: input.startDate,
         endDate: input.endDate,
-        limit: 5_001,
+        limit: LEDGER_QUERY_SENTINEL_LIMIT,
         includeSplitChildren: false
       })), operation);
-      if (rows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
-        'RESULT_LIMIT_EXCEEDED', 'Complete diagnostic classification requires more than 5000 eligible transactions.', operation, false
+      if (rows.length > MAX_LEDGER_SCAN_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', `Complete diagnostic classification requires more than ${MAX_LEDGER_SCAN_RESULTS} eligible transactions.`, operation, false
       );
       const classified = classify(rows, input.dateWindowDays);
       const eligible = classified.filter(candidate => {
@@ -1082,13 +1101,13 @@ export class ActualClient {
       });
       const [rowsResult, publicBalance] = await Promise.all([
         this.api.aqlQuery(compileBoundedLeafTransactions({
-          startDate: '0001-01-01', endDate: resolvedCutoff, accountIds: [accountId], limit: 5_001, includeSplitChildren: true
+          startDate: '0001-01-01', endDate: resolvedCutoff, accountIds: [accountId], limit: LEDGER_QUERY_SENTINEL_LIMIT, includeSplitChildren: true
         })),
         this.api.getAccountBalance(accountId, new Date(`${resolvedCutoff}T00:00:00`))
       ]);
       const rows = parseAqlRows(rowsResult, operation);
-      if (rows.length > MAX_TRANSACTION_RESULTS) throw new PublicError(
-        'RESULT_LIMIT_EXCEEDED', 'Reconciliation requires more than 5000 leaf transactions.', operation, false
+      if (rows.length > MAX_LEDGER_SCAN_RESULTS) throw new PublicError(
+        'RESULT_LIMIT_EXCEEDED', `Reconciliation requires more than ${MAX_LEDGER_SCAN_RESULTS} leaf transactions.`, operation, false
       );
       const aggregate = aggregateReconciliation(rows, statementBalance);
       if (aggregate.balances.ledger !== publicBalance) throw new PublicError(
@@ -1318,7 +1337,17 @@ export class ActualClient {
           'The local import may have succeeded, but synchronization failed. Run actual_sync before retrying.',
           operation,
           false,
-          { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true },
+          {
+            recoveryAction: 'actual_sync_then_exact_read',
+            state: 'local_change_may_have_succeeded',
+            partialState: true,
+            details: {
+              addedTransactionIds: result.added,
+              updatedTransactionIds: result.updated,
+              affectedTransactionIds: [...new Set([...result.added, ...result.updated])],
+              pendingImportedIds: request.transactions.map(transaction => transaction.imported_id)
+            }
+          },
           { cause: error }
         );
       }
@@ -1402,7 +1431,13 @@ export class ActualClient {
       try { await this.observeSync(); }
       catch (error) { throw new PublicError(
         'MUTATION_SYNC_FAILED', 'The local change succeeded, but synchronization failed. Run actual_sync before retrying the mutation.', operation, false,
-        { recoveryAction: 'actual_sync', state: 'local_change_may_have_succeeded', partialState: true }, { cause: error }
+        {
+          recoveryAction: 'actual_sync_then_exact_read',
+          state: 'local_change_may_have_succeeded',
+          partialState: true,
+          details: { transactionId, affectedTransactionIds: pair ? [transactionId, counterpartId!] : [transactionId] }
+        },
+        { cause: error }
       ); }
       const readIds = pair ? [transactionId, counterpartId!] : [transactionId];
       let persisted: AdapterTransaction[];
@@ -2197,7 +2232,12 @@ export class ActualClient {
           entity: { type: 'payee', id: target.id, name: target.name },
           state: 'local_change_may_have_succeeded',
           partialState: true,
-          details: { sourcePayeeIds, targetPayeeId }
+          details: {
+            sourcePayeeIds,
+            targetPayeeId,
+            impactedTransactionIds: [...impactedTransactionIds].sort(),
+            impactedRuleIds: [...impactedRuleIds].sort()
+          }
         },
         error === undefined ? undefined : { cause: error }
       );
@@ -2441,7 +2481,7 @@ export class ActualClient {
     const operation = 'actual_list_schedules';
     return this.run(operation, async () => {
       const limit = filters.limit ?? 100;
-      const offset = filters.offset ?? 0;
+      const offset = filters.offset ?? DEFAULT_PAGINATION_OFFSET;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SCHEDULE_RESULTS ||
           !Number.isSafeInteger(offset) || offset < 0 || offset > MAX_SCHEDULE_OFFSET) {
         throw new PublicError('CONFIGURATION_ERROR', 'Schedule pagination is outside the supported bounds.', operation, false);
@@ -2550,7 +2590,7 @@ export class ActualClient {
       throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned an unsupported linked-transaction query shape.', operation, false);
     }
     const rows = (value as { data: unknown[] }).data;
-    if (rows.length > 5000 || rows.some(row => !row || typeof row !== 'object' || typeof (row as { id?: unknown }).id !== 'string')) {
+    if (rows.length > MAX_LEDGER_SCAN_RESULTS || rows.some(row => !row || typeof row !== 'object' || typeof (row as { id?: unknown }).id !== 'string')) {
       throw new PublicError('QUERY_SHAPE_INVALID', 'Actual returned invalid linked schedule transaction evidence.', operation, false);
     }
     return rows.map(row => (row as { id: string }).id).sort();

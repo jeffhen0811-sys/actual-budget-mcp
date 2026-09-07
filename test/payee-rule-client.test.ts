@@ -138,7 +138,11 @@ describe('serialized payee administration', () => {
     vi.mocked(api.getPayeeRules).mockResolvedValue([]);
     vi.mocked(api.sync).mockRejectedValue(new Error('network failure'));
     await expect(client.mergePayees(['source'], 'target', true)).rejects.toMatchObject({
-      code: 'MERGE_PARTIAL_STATE', metadata: { partialState: true, recoveryAction: 'actual_sync' }
+      code: 'MERGE_PARTIAL_STATE', metadata: {
+        partialState: true,
+        recoveryAction: 'actual_sync',
+        details: { sourcePayeeIds: ['source'], targetPayeeId: 'target', impactedTransactionIds: [], impactedRuleIds: [] }
+      }
     });
     expect(api.mergePayees).toHaveBeenCalledOnce();
     await client.shutdown();

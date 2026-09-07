@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActualClient } from '../src/actual/client.js';
 import type { AdapterTransaction } from '../src/actual/adapter.js';
 import { fakeAdapter } from './helpers.js';
+import { purityBoundaryFingerprint } from './purity-fingerprint.js';
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))));
@@ -78,6 +79,7 @@ describe('serialized transfer client operations', () => {
       { id: 'c', account: 'three', date: '2026-09-01', amount: 100 }
     ];
     vi.mocked(api.aqlQuery).mockResolvedValueOnce({ data: rows });
+    const before = purityBoundaryFingerprint(api, rows);
     await expect(client.findPossibleTransfers({
       startDate: '2026-09-01', endDate: '2026-09-01', dateWindowDays: 0,
       classification: 'AMBIGUOUS', limit: 1, offset: 1
@@ -88,6 +90,7 @@ describe('serialized transfer client operations', () => {
     await expect(client.findPossibleDuplicates({
       startDate: '2026-09-01', endDate: '2026-09-01', dateWindowDays: 3, limit: 100, offset: 0
     })).rejects.toMatchObject({ code: 'RESULT_LIMIT_EXCEEDED' });
+    expect(purityBoundaryFingerprint(api, rows)).toBe(before);
     await client.shutdown();
   });
 
@@ -102,11 +105,13 @@ describe('serialized transfer client operations', () => {
       { id: 'to-payee', name: 'Checking', transfer_acct: 'to' }
     ]);
     vi.mocked(api.getCategories).mockResolvedValue([{ id: 'expense', name: 'Transfer expense', group_id: 'g', is_income: false }]);
+    const before = purityBoundaryFingerprint(api, { accounts: ['from', 'to'], amount: 500 });
     await expect(client.createTransfer({
       fromAccountId: 'from', toAccountId: 'to', amount: 500, date: '2026-09-01', categoryId: 'expense'
     })).resolves.toMatchObject({ dryRun: true, anchorAccountId: 'to', fromSide: { amount: -500, categoryId: null }, toSide: { amount: 500, categoryId: 'expense' } });
     expect(api.addTransactions).not.toHaveBeenCalled();
     expect(api.sync).not.toHaveBeenCalled();
+    expect(purityBoundaryFingerprint(api, { accounts: ['from', 'to'], amount: 500 })).toBe(before);
     await client.shutdown();
   });
 
@@ -152,6 +157,25 @@ describe('serialized transfer client operations', () => {
     });
     expect(api.addTransactions).toHaveBeenCalledOnce();
     expect(api.deleteTransaction).not.toHaveBeenCalled();
+    await client.shutdown();
+  });
+
+  it('reports exact single or reciprocal transaction identifiers when post-write sync is ambiguous', async () => {
+    const { api, client } = await harness();
+    vi.mocked(api.aqlQuery).mockResolvedValueOnce({ data: [{
+      id: 'ordinary', account: 'from', date: '2026-09-01', amount: -100, transfer_id: null
+    }] });
+    vi.mocked(api.updateTransaction).mockResolvedValueOnce([{ id: 'ordinary' }]);
+    vi.mocked(api.sync).mockRejectedValueOnce(new Error('network failure'));
+    await expect(client.updateTransaction('ordinary', { notes: 'changed' })).rejects.toMatchObject({
+      code: 'MUTATION_SYNC_FAILED',
+      metadata: {
+        recoveryAction: 'actual_sync_then_exact_read',
+        details: { transactionId: 'ordinary', affectedTransactionIds: ['ordinary'] }
+      }
+    });
+    expect(api.updateTransaction).toHaveBeenCalledOnce();
+    expect(api.sync).toHaveBeenCalledOnce();
     await client.shutdown();
   });
 

@@ -1,0 +1,356 @@
+{
+  "baselineVersion": "0.7.0",
+  "sourceCommit": "c5b752a5f7f3067a40480f72078907c72ad26c66",
+  "accepted": [
+    {
+      "name": "opaque identifiers are trimmed before use",
+      "tool": "actual_get_transactions",
+      "arguments": { "accountId": "  account-id  ", "startDate": "2024-02-29", "endDate": "2024-02-29" },
+      "expected": { "accountId": "account-id", "startDate": "2024-02-29", "endDate": "2024-02-29" }
+    },
+    {
+      "name": "inclusive leap-year range accepts exactly 366 days",
+      "tool": "actual_get_transactions",
+      "arguments": { "accountId": "account-id", "startDate": "2024-01-01", "endDate": "2024-12-31" }
+    },
+    {
+      "name": "search accepts equal signed amount bounds and unique filters",
+      "tool": "actual_search_transactions",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-01",
+        "accountIds": ["account-a", "account-b"],
+        "categoryIds": ["category-a"],
+        "minAmount": -1299,
+        "maxAmount": -1299,
+        "text": "literal 100%?"
+      }
+    },
+    {
+      "name": "monthly schedule accepts calendar and weekday pattern boundaries",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "between", "minAmount": -100, "maxAmount": -100 },
+        "date": {
+          "type": "recurring",
+          "frequency": "monthly",
+          "start": "2024-02-29",
+          "interval": 1,
+          "patterns": [
+            { "type": "day", "value": 31 },
+            { "type": "MO", "value": -5 },
+            { "type": "FR", "value": 5 }
+          ],
+          "end": { "type": "onDate", "date": "2024-02-29" }
+        },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "schedule update accepts one editable field",
+      "tool": "actual_update_schedule",
+      "arguments": { "scheduleId": "schedule-id", "postsTransaction": false }
+    },
+    {
+      "name": "bulk desired-state updates accept unique IDs and explicit null notes",
+      "tool": "actual_bulk_update_transactions",
+      "arguments": {
+        "items": [
+          { "transactionId": "transaction-a", "fields": { "notes": null } },
+          { "transactionId": "transaction-b", "fields": { "cleared": true } }
+        ]
+      }
+    },
+    {
+      "name": "transaction update accepts one desired-state field",
+      "tool": "actual_update_transaction",
+      "arguments": { "transactionId": "transaction-id", "fields": { "amount": 0 } }
+    },
+    {
+      "name": "transfer search accepts equal magnitude bounds",
+      "tool": "actual_search_transfers",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-01",
+        "minMagnitude": 1,
+        "maxMagnitude": 1
+      }
+    },
+    {
+      "name": "transfer creation accepts distinct accounts",
+      "tool": "actual_create_transfer",
+      "arguments": {
+        "fromAccountId": "account-a",
+        "toAccountId": "account-b",
+        "amount": 1,
+        "date": "2026-01-01"
+      }
+    },
+    {
+      "name": "summary accepts unique scoped identifiers",
+      "tool": "actual_get_spending_summary",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31",
+        "accountIds": ["account-a", "account-b"],
+        "categoryIds": ["category-a", "category-b"]
+      }
+    },
+    {
+      "name": "budget copy accepts distinct source and target months",
+      "tool": "actual_copy_budget_month",
+      "arguments": { "sourceMonth": "2026-01", "targetMonth": "2026-02" }
+    },
+    {
+      "name": "account update accepts one permitted field",
+      "tool": "actual_update_account",
+      "arguments": { "accountId": "account-id", "offbudget": false }
+    },
+    {
+      "name": "payee merge accepts unique sources distinct from target",
+      "tool": "actual_merge_payees",
+      "arguments": {
+        "sourcePayeeIds": ["payee-a", "payee-b"],
+        "targetPayeeId": "payee-target",
+        "confirmDestructive": true
+      }
+    },
+    {
+      "name": "rule amount options accept one direction",
+      "tool": "actual_create_rule",
+      "arguments": {
+        "stage": "default",
+        "conditionsOp": "and",
+        "conditions": [
+          { "field": "amount", "op": "gte", "value": 0, "options": { "inflow": true, "outflow": false } }
+        ],
+        "actions": [{ "op": "set", "field": "cleared", "value": true }]
+      }
+    },
+    {
+      "name": "rule update accepts one permitted field",
+      "tool": "actual_update_rule",
+      "arguments": { "ruleId": "rule-id", "stage": "post" }
+    }
+  ],
+  "rejectedBoundaries": [
+    {
+      "name": "nonexistent calendar date",
+      "tool": "actual_get_transactions",
+      "arguments": { "accountId": "account-id", "startDate": "2023-02-29", "endDate": "2023-03-01" }
+    },
+    {
+      "name": "reversed date range",
+      "tool": "actual_get_transactions",
+      "arguments": { "accountId": "account-id", "startDate": "2026-02-01", "endDate": "2026-01-31" }
+    },
+    {
+      "name": "inclusive range exceeds 366 days",
+      "tool": "actual_get_transactions",
+      "arguments": { "accountId": "account-id", "startDate": "2024-01-01", "endDate": "2025-01-01" }
+    },
+    {
+      "name": "search identifier filters contain duplicates",
+      "tool": "actual_search_transactions",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31",
+        "accountIds": ["account-a", "account-a"]
+      }
+    },
+    {
+      "name": "search text contains a null byte",
+      "tool": "actual_search_transactions",
+      "arguments": { "startDate": "2026-01-01", "endDate": "2026-01-31", "text": "unsafe\u0000text" }
+    },
+    {
+      "name": "search minimum amount exceeds maximum",
+      "tool": "actual_search_transactions",
+      "arguments": { "startDate": "2026-01-01", "endDate": "2026-01-31", "minAmount": 1, "maxAmount": 0 }
+    },
+    {
+      "name": "uncategorized search conflicts with category IDs",
+      "tool": "actual_search_transactions",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31",
+        "uncategorizedOnly": true,
+        "categoryIds": ["category-id"]
+      }
+    },
+    {
+      "name": "monthly schedule omits required patterns",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "exact", "amount": -100 },
+        "date": { "type": "recurring", "frequency": "monthly", "start": "2026-01-01", "interval": 1 },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "weekly schedule supplies monthly patterns",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "exact", "amount": -100 },
+        "date": {
+          "type": "recurring",
+          "frequency": "weekly",
+          "start": "2026-01-01",
+          "interval": 1,
+          "patterns": [{ "type": "MO", "value": 1 }]
+        },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "monthly calendar pattern exceeds day 31",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "exact", "amount": -100 },
+        "date": {
+          "type": "recurring",
+          "frequency": "monthly",
+          "start": "2026-01-01",
+          "interval": 1,
+          "patterns": [{ "type": "day", "value": 32 }]
+        },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "monthly weekday pattern rejects zero",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "exact", "amount": -100 },
+        "date": {
+          "type": "recurring",
+          "frequency": "monthly",
+          "start": "2026-01-01",
+          "interval": 1,
+          "patterns": [{ "type": "MO", "value": 0 }]
+        },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "schedule end date precedes start",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "exact", "amount": -100 },
+        "date": {
+          "type": "recurring",
+          "frequency": "daily",
+          "start": "2026-02-01",
+          "interval": 1,
+          "end": { "type": "onDate", "date": "2026-01-31" }
+        },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "schedule amount minimum exceeds maximum",
+      "tool": "actual_create_schedule",
+      "arguments": {
+        "accountId": "account-id",
+        "amount": { "type": "between", "minAmount": 2, "maxAmount": 1 },
+        "date": { "type": "oneTime", "date": "2026-01-01" },
+        "postsTransaction": true
+      }
+    },
+    {
+      "name": "schedule update contains no editable field",
+      "tool": "actual_update_schedule",
+      "arguments": { "scheduleId": "schedule-id" }
+    },
+    {
+      "name": "bulk item contains no desired-state field",
+      "tool": "actual_bulk_update_transactions",
+      "arguments": { "items": [{ "transactionId": "transaction-id", "fields": {} }] }
+    },
+    {
+      "name": "bulk request repeats a transaction ID",
+      "tool": "actual_bulk_update_transactions",
+      "arguments": {
+        "items": [
+          { "transactionId": "transaction-id", "fields": { "cleared": true } },
+          { "transactionId": "transaction-id", "fields": { "cleared": false } }
+        ]
+      }
+    },
+    {
+      "name": "transaction update contains no field",
+      "tool": "actual_update_transaction",
+      "arguments": { "transactionId": "transaction-id", "fields": {} }
+    },
+    {
+      "name": "transfer magnitude minimum exceeds maximum",
+      "tool": "actual_search_transfers",
+      "arguments": { "startDate": "2026-01-01", "endDate": "2026-01-31", "minMagnitude": 2, "maxMagnitude": 1 }
+    },
+    {
+      "name": "transfer creation uses the same account twice",
+      "tool": "actual_create_transfer",
+      "arguments": { "fromAccountId": "account-a", "toAccountId": "account-a", "amount": 1, "date": "2026-01-01" }
+    },
+    {
+      "name": "summary scope repeats an identifier",
+      "tool": "actual_get_spending_summary",
+      "arguments": {
+        "startDate": "2026-01-01",
+        "endDate": "2026-01-31",
+        "categoryIds": ["category-id", "category-id"]
+      }
+    },
+    {
+      "name": "budget copy uses the same month",
+      "tool": "actual_copy_budget_month",
+      "arguments": { "sourceMonth": "2026-01", "targetMonth": "2026-01" }
+    },
+    {
+      "name": "account update contains no permitted field",
+      "tool": "actual_update_account",
+      "arguments": { "accountId": "account-id" }
+    },
+    {
+      "name": "payee merge repeats a source",
+      "tool": "actual_merge_payees",
+      "arguments": {
+        "sourcePayeeIds": ["payee-a", "payee-a"],
+        "targetPayeeId": "payee-target",
+        "confirmDestructive": true
+      }
+    },
+    {
+      "name": "payee merge includes the target among sources",
+      "tool": "actual_merge_payees",
+      "arguments": {
+        "sourcePayeeIds": ["payee-a", "payee-target"],
+        "targetPayeeId": "payee-target",
+        "confirmDestructive": true
+      }
+    },
+    {
+      "name": "rule amount options select inflow and outflow together",
+      "tool": "actual_create_rule",
+      "arguments": {
+        "stage": "default",
+        "conditionsOp": "and",
+        "conditions": [
+          { "field": "amount", "op": "gte", "value": 0, "options": { "inflow": true, "outflow": true } }
+        ],
+        "actions": [{ "op": "set", "field": "cleared", "value": true }]
+      }
+    },
+    {
+      "name": "rule update contains no permitted field",
+      "tool": "actual_update_rule",
+      "arguments": { "ruleId": "rule-id" }
+    }
+  ]
+}
